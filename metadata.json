@@ -1,0 +1,6 @@
+{
+  "name": "Ilumina",
+  "description": "Una plataforma intuitiva para profesores que optimiza la gestión de calificaciones, planillas de notas de lapsos académicos y estadísticas de rendimiento estudiantil en tiempo real.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
