@@ -906,15 +906,16 @@ export async function loginTeacherWithSupabase(email: string, password?: string)
       // Validate password: match against SHA-256 hash OR against plain text (if manually inserted in DB table editor)
       if (inputHash === expectedHash || password === expectedHash) {
         passwordVerified = true;
-        // If DB did not have the hash in avatar_url or password_hash, sync it now so all devices can log in!
+        // If DB did not have the hash in avatar_url, sync it now so all devices can log in!
         if (prof?.id && !extractHashFromAvatar(prof.avatar_url)) {
           const syncAvatar = encodeAvatarWithHash(prof.avatar_url || "", inputHash);
           const updatePayload: any = { avatar_url: syncAvatar };
-          try {
-            await client.from("profesores").update({ ...updatePayload, password_hash: inputHash }).eq("id", prof.id);
-          } catch {
-            await client.from("profesores").update(updatePayload).eq("id", prof.id);
+          if (prof && "password_hash" in prof && prof.password_hash !== undefined) {
+            updatePayload.password_hash = inputHash;
           }
+          try {
+            await client.from("profesores").update(updatePayload).eq("id", prof.id);
+          } catch {}
         }
       } else {
         return {
@@ -931,19 +932,12 @@ export async function loginTeacherWithSupabase(email: string, password?: string)
 
       const syncAvatar = encodeAvatarWithHash(prof.avatar_url || "", inputHash);
       const updatePayload: any = { avatar_url: syncAvatar };
-      try {
-        const { error: updErr } = await client
-          .from("profesores")
-          .update({ ...updatePayload, password_hash: inputHash })
-          .eq("id", prof.id);
-        if (updErr) {
-          await client.from("profesores").update(updatePayload).eq("id", prof.id);
-        }
-      } catch {
-        try {
-          await client.from("profesores").update(updatePayload).eq("id", prof.id);
-        } catch {}
+      if (prof && "password_hash" in prof && prof.password_hash !== undefined) {
+        updatePayload.password_hash = inputHash;
       }
+      try {
+        await client.from("profesores").update(updatePayload).eq("id", prof.id);
+      } catch {}
 
       // Also store in localStorage
       try {

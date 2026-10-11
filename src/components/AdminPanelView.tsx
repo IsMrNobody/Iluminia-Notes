@@ -165,9 +165,8 @@ export default function AdminPanelView({
 
   const loadStudents = async (targetYear?: string) => {
     setLoadingStudents(true);
-    const yr = targetYear || studentYearFilter;
     try {
-      const list = await fetchRegisteredStudentsFromDatabase(yr);
+      const list = await fetchRegisteredStudentsFromDatabase(targetYear);
       setRegisteredStudents(list);
     } catch (e) {
       console.error(e);

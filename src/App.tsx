@@ -15,7 +15,8 @@ import AdminPanelView from "./components/AdminPanelView";
 import { 
   isUserAdmin, 
   getRegisteredStudentsForSection, 
-  convertRegisteredToClassStudents 
+  convertRegisteredToClassStudents,
+  fetchRegisteredStudentsFromDatabase
 } from "./lib/adminService";
 import { 
   getSupabaseClient, 
@@ -149,7 +150,9 @@ export default function App() {
     if (!teacherIdentifier) return;
 
     let isMounted = true;
-    getTeacherClassesFromSupabase(teacherIdentifier, teacher.name)
+    fetchRegisteredStudentsFromDatabase()
+      .catch(() => [])
+      .then(() => getTeacherClassesFromSupabase(teacherIdentifier, teacher.name))
       .then((supaClasses) => {
         if (!isMounted) return;
         const storageKey = (teacher.email || teacher.id || "default").toLowerCase();
@@ -159,6 +162,19 @@ export default function App() {
             if (!cls.students || cls.students.length === 0) {
               const matching = getRegisteredStudentsForSection(cls.gradeYear, cls.sectionLetter);
               if (matching.length > 0) {
+                // Auto-enroll in Supabase matriculas in background
+                try {
+                  const client: any = getSupabaseClient();
+                  matching.forEach((reg, i) => {
+                    client.from("matriculas").upsert({
+                      materia_id: cls.id,
+                      alumno_id: reg.id,
+                      numero_lista: i + 1,
+                      asistencia_porcentaje: 100,
+                    }, { onConflict: "materia_id,alumno_id" }).catch(() => {});
+                  });
+                } catch {}
+
                 return {
                   ...cls,
                   students: convertRegisteredToClassStudents(matching),

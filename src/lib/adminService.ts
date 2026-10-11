@@ -148,39 +148,87 @@ export function getRegisteredStudents(): RegisteredStudent[] {
   return [];
 }
 
+// Standardize gradeYear representation to match GRADE_YEAR_OPTIONS
+export function formatGradeYear(yr?: string): string {
+  const clean = (yr || "").toLowerCase();
+  if (clean.includes("1")) return "1er Año";
+  if (clean.includes("2")) return "2do Año";
+  if (clean.includes("3")) return "3er Año";
+  if (clean.includes("4")) return "4to Año";
+  if (clean.includes("5")) return "5to Año";
+  return yr || "1er Año";
+}
+
+// Helper to encode student gradeYear and section into avatar URL for 100% database persistence across devices
+export function encodeStudentAvatar(avatarUrl: string, gradeYear: string, sectionLetter: string): string {
+  const base = cleanAvatarUrl(avatarUrl);
+  const yr = formatGradeYear(gradeYear);
+  const sec = (sectionLetter || "A").trim().toUpperCase();
+  return `${base}#yr=${encodeURIComponent(yr)}&sec=${sec}`;
+}
+
+// Helper to extract student metadata from avatar_url, email, or DB columns
+export function extractStudentMetadata(alumno: any): { gradeYear: string; sectionLetter: string } {
+  // 1. Direct DB columns if present
+  if (alumno.grado_ano || alumno.ano) {
+    return {
+      gradeYear: formatGradeYear(alumno.grado_ano || alumno.ano),
+      sectionLetter: (alumno.seccion || "A").trim().toUpperCase(),
+    };
+  }
+
+  // 2. From avatar_url fragment: #yr=...&sec=...
+  if (alumno.avatar_url) {
+    const yrMatch = alumno.avatar_url.match(/[#&]yr=([^&#]+)/);
+    const secMatch = alumno.avatar_url.match(/[#&]sec=([^&#]+)/);
+    if (yrMatch || secMatch) {
+      const yrDecoded = yrMatch ? decodeURIComponent(yrMatch[1]).replace(/_/g, " ") : "";
+      const secDecoded = secMatch ? decodeURIComponent(secMatch[1]).toUpperCase() : "A";
+      return {
+        gradeYear: formatGradeYear(yrDecoded),
+        sectionLetter: secDecoded || "A",
+      };
+    }
+  }
+
+  // 3. From email field if used as carrier: meta:yr:sec
+  if (alumno.email && alumno.email.startsWith("meta:")) {
+    const parts = alumno.email.replace("meta:", "").split(":");
+    return {
+      gradeYear: formatGradeYear(parts[0]?.replace(/_/g, " ")),
+      sectionLetter: parts[1]?.toUpperCase() || "A",
+    };
+  }
+
+  // 4. From localStorage metadataMap
+  const metadataMap = getStudentsMetadataMap();
+  const meta: any = (metadataMap as any)[alumno.cedula] || (metadataMap as any)[alumno.id] || {};
+  if (meta?.gradeYear || meta?.sectionLetter) {
+    return {
+      gradeYear: formatGradeYear(meta.gradeYear),
+      sectionLetter: (meta.sectionLetter || "A").trim().toUpperCase(),
+    };
+  }
+
+  return {
+    gradeYear: "1er Año",
+    sectionLetter: "A",
+  };
+}
+
 /**
  * Fetch registered students directly from Supabase database (alumnos table)
- * Optionally filters by selectedYear to optimize read operations on large databases
+ * Optionally filters by selectedYear
  */
 export async function fetchRegisteredStudentsFromDatabase(selectedYear?: string): Promise<RegisteredStudent[]> {
   purgeMockStudents();
   const client: any = getSupabaseClient();
 
   try {
-    let supaAlumnos: any[] | null = null;
-    let queryErr: any = null;
-
-    if (selectedYear) {
-      try {
-        const { data: byYear, error: byYearErr } = await client
-          .from("alumnos")
-          .select("*")
-          .eq("grado_ano", selectedYear)
-          .order("nombres", { ascending: true });
-        if (!byYearErr && byYear && byYear.length > 0) {
-          supaAlumnos = byYear;
-        }
-      } catch {}
-    }
-
-    if (!supaAlumnos) {
-      const { data, error } = await client
-        .from("alumnos")
-        .select("*")
-        .order("nombres", { ascending: true });
-      supaAlumnos = data;
-      queryErr = error;
-    }
+    const { data: supaAlumnos, error: queryErr } = await client
+      .from("alumnos")
+      .select("*")
+      .order("nombres", { ascending: true });
 
     if (queryErr) {
       console.warn("Could not fetch alumnos from Supabase:", queryErr);
@@ -188,32 +236,34 @@ export async function fetchRegisteredStudentsFromDatabase(selectedYear?: string)
     }
 
     if (!supaAlumnos || supaAlumnos.length === 0) {
-      // Database has 0 students! Clean out local storage and return empty
       localStorage.removeItem(REGISTERED_STUDENTS_KEY);
       return [];
     }
-
-    const metadataMap = getStudentsMetadataMap();
 
     // Map each real database student from Supabase
     const list: RegisteredStudent[] = supaAlumnos
       .filter((a: any) => !isMockStudent({ id: a.id, cedula: a.cedula }))
       .map((a: any) => {
-        const meta: { gradeYear?: string; sectionLetter?: string; createdAt?: string } = 
-          metadataMap[a.cedula] || metadataMap[a.id] || {};
+        const meta = extractStudentMetadata(a);
         return {
           id: a.id,
           firstName: a.nombres || "",
           lastName: a.apellidos || "",
           cedula: a.cedula || "",
-          gradeYear: a.grado_ano || a.ano || meta.gradeYear || "1er Año",
-          sectionLetter: a.seccion || meta.sectionLetter || "A",
-          avatarUrl: a.avatar_url || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
-          createdAt: a.created_at ? a.created_at.slice(0, 10) : (meta.createdAt || new Date().toISOString().slice(0, 10)),
+          gradeYear: meta.gradeYear,
+          sectionLetter: meta.sectionLetter,
+          avatarUrl: cleanAvatarUrl(a.avatar_url),
+          createdAt: a.created_at ? a.created_at.slice(0, 10) : new Date().toISOString().slice(0, 10),
         };
       });
 
     localStorage.setItem(REGISTERED_STUDENTS_KEY, JSON.stringify(list));
+
+    if (selectedYear && selectedYear !== "ALL") {
+      const normSelected = normalizeYear(selectedYear);
+      return list.filter(s => normalizeYear(s.gradeYear) === normSelected);
+    }
+
     return list;
   } catch (err) {
     console.warn("Error fetching students from database:", err);
@@ -233,58 +283,54 @@ export async function saveRegisteredStudent(
   const cleanCedula = data.cedula.trim();
   const cleanGrade = data.gradeYear.trim();
   const cleanSection = data.sectionLetter.trim().toUpperCase();
-  const avatar = data.avatarUrl || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80";
+  const rawAvatar = data.avatarUrl || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80";
+  const avatarToStore = encodeStudentAvatar(rawAvatar, cleanGrade, cleanSection);
+  const metaEmail = `meta:${cleanGrade.replace(/\s+/g, "_")}:${cleanSection}`;
   const createdAt = data.createdAt || new Date().toISOString().slice(0, 10);
 
   let realId = data.id || "";
 
-  // Save directly to Supabase alumnos table
+  // Save directly to Supabase alumnos table with metadata in avatar_url and email
   try {
-    let insData: any = null;
-    let insError: any = null;
+    const studentPayload: any = {
+      nombres: cleanFirst,
+      apellidos: cleanLast,
+      cedula: cleanCedula,
+      avatar_url: avatarToStore,
+      email: (data as any).email || metaEmail,
+    };
 
-    try {
-      const res = await client
-        .from("alumnos")
-        .upsert(
-          {
-            nombres: cleanFirst,
-            apellidos: cleanLast,
-            cedula: cleanCedula,
-            avatar_url: avatar,
-            grado_ano: cleanGrade,
-            seccion: cleanSection,
-          },
-          { onConflict: "cedula" }
-        )
-        .select()
-        .maybeSingle();
-      insData = res.data;
-      insError = res.error;
-    } catch (e) {
-      insError = e;
-    }
-
-    // If schema doesn't have grado_ano or seccion columns, retry with base columns
-    if (insError) {
-      const retryRes = await client
-        .from("alumnos")
-        .upsert(
-          {
-            nombres: cleanFirst,
-            apellidos: cleanLast,
-            cedula: cleanCedula,
-            avatar_url: avatar,
-          },
-          { onConflict: "cedula" }
-        )
-        .select()
-        .maybeSingle();
-      insData = retryRes.data;
-    }
+    let { data: insData, error: insError } = await client
+      .from("alumnos")
+      .upsert(studentPayload, { onConflict: "cedula" })
+      .select()
+      .maybeSingle();
 
     if (insData?.id) {
       realId = insData.id;
+
+      // Auto-enroll student into any matching existing classes in Supabase matriculas!
+      try {
+        const { data: matchingMats } = await client
+          .from("materias")
+          .select("id, grado_ano, seccion");
+        
+        if (matchingMats && matchingMats.length > 0) {
+          const normG = normalizeYear(cleanGrade);
+          const matsToEnroll = matchingMats.filter(
+            (m: any) => normalizeYear(m.grado_ano) === normG && m.seccion.trim().toUpperCase() === cleanSection
+          );
+          for (const mat of matsToEnroll) {
+            await client.from("matriculas").upsert({
+              materia_id: mat.id,
+              alumno_id: realId,
+              asistencia_porcentaje: 100,
+            }, { onConflict: "materia_id,alumno_id" });
+          }
+        }
+      } catch (e) {
+        console.warn("Could not auto-enroll in matching materias:", e);
+      }
     }
   } catch (e) {
     console.warn("Could not sync registered student to Supabase alumnos:", e);
@@ -301,7 +347,7 @@ export async function saveRegisteredStudent(
     cedula: cleanCedula,
     gradeYear: cleanGrade,
     sectionLetter: cleanSection,
-    avatarUrl: avatar,
+    avatarUrl: cleanAvatarUrl(rawAvatar),
     createdAt: createdAt,
   };
 
