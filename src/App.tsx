@@ -1328,7 +1328,7 @@ export default function App() {
         </nav>
       </div>
 
-      {/* Adding Student Modal overlay Dialog */}
+      {/* Adding Student Modal overlay the Dialog */}
       <AnimatePresence>
         {isAddStudentOpen && (
           <div className="fixed inset-0 bg-slate-950/45 backdrop-blur-xs z-50 flex items-center justify-center p-4">
