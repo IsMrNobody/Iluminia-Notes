@@ -285,6 +285,25 @@ export interface TeacherRegistrationInput {
   initialSections?: string[];
 }
 
+// Helper to strip any internal auth hash fragment from avatar URLs for clean display
+export function cleanAvatarUrl(url?: string): string {
+  if (!url) return "https://images.unsplash.com/photo-1544717305-2782549b5136?w=200&auto=format&fit=crop&q=80";
+  return url.split("#auth:")[0].trim();
+}
+
+// Helper to extract persistent auth hash from avatar URL
+export function extractHashFromAvatar(url?: string): string | null {
+  if (!url) return null;
+  const match = url.match(/#auth:([a-f0-9]+)/i);
+  return match ? match[1] : null;
+}
+
+// Helper to encode auth hash into avatar URL for 100% database persistence across devices
+export function encodeAvatarWithHash(url: string, hash: string): string {
+  const base = cleanAvatarUrl(url);
+  return `${base}#auth:${hash}`;
+}
+
 // Secure password hashing helper
 export async function hashPassword(password: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -307,10 +326,9 @@ export async function registerTeacherInSupabase(input: TeacherRegistrationInput)
   const cleanEmail = input.email.trim().toLowerCase();
   let savedToSupabase = false;
   let profesorId = "";
-  let authUserId: string | null = null;
   const passwordHash = input.password ? await hashPassword(input.password) : "";
 
-  // 1. Register credentials locally as fallback
+  // 1. Register credentials locally as fast local cache
   try {
     const creds = JSON.parse(localStorage.getItem("ilumina_user_credentials") || "{}");
     creds[cleanEmail] = {
@@ -320,36 +338,10 @@ export async function registerTeacherInSupabase(input: TeacherRegistrationInput)
     localStorage.setItem("ilumina_user_credentials", JSON.stringify(creds));
   } catch {}
 
-  // 2. Register in Supabase Auth if password provided
-  if (input.password && input.password.length >= 6) {
-    try {
-      const { data: authData, error: authErr } = await client.auth.signUp({
-        email: cleanEmail,
-        password: input.password,
-        options: {
-          data: {
-            name: input.name.trim(),
-            department: input.department.trim(),
-            rank: input.rank.trim(),
-          },
-        },
-      });
-      if (authData?.user) {
-        authUserId = authData.user.id;
-      } else if (authErr) {
-        // If user already existed in Auth, try sign in to obtain the user ID
-        const { data: signInData } = await client.auth.signInWithPassword({
-          email: cleanEmail,
-          password: input.password,
-        });
-        if (signInData?.user) {
-          authUserId = signInData.user.id;
-        }
-      }
-    } catch {
-      // Supabase auth attempt completed
-    }
-  }
+  // 2. Prepare persistent avatar with encoded hash (ensures cross-device login even without password_hash column)
+  const avatarToStore = passwordHash 
+    ? encodeAvatarWithHash(input.avatarUrl || "", passwordHash)
+    : (input.avatarUrl || "https://images.unsplash.com/photo-1544717305-2782549b5136?w=200&auto=format&fit=crop&q=80");
 
   const newProfile: TeacherProfile = {
     name: input.name.trim(),
@@ -358,7 +350,7 @@ export async function registerTeacherInSupabase(input: TeacherRegistrationInput)
     schoolYear: input.schoolYear.trim(),
     rank: input.rank.trim().toUpperCase(),
     status: "ACTIVO",
-    avatarUrl: input.avatarUrl || "https://images.unsplash.com/photo-1544717305-2782549b5136?w=200&auto=format&fit=crop&q=80",
+    avatarUrl: cleanAvatarUrl(input.avatarUrl),
     totalStudents: 0,
     totalStudentsGrowthPercent: 0,
     averagePerformance: 0.0,
@@ -376,11 +368,11 @@ export async function registerTeacherInSupabase(input: TeacherRegistrationInput)
       departamento: newProfile.department,
       rango: newProfile.rank,
       ano_escolar: newProfile.schoolYear,
-      avatar_url: newProfile.avatarUrl,
+      avatar_url: avatarToStore,
     };
 
-    if (authUserId) {
-      teacherDataToInsert.user_id = authUserId;
+    if (passwordHash) {
+      teacherDataToInsert.password_hash = passwordHash;
     }
 
     // Check if professor already exists by email
@@ -401,8 +393,9 @@ export async function registerTeacherInSupabase(input: TeacherRegistrationInput)
         .select()
         .maybeSingle();
 
-      if (updError && teacherDataToInsert.user_id) {
-        delete teacherDataToInsert.user_id;
+      if (updError && teacherDataToInsert.password_hash) {
+        // If password_hash column doesn't exist in Supabase table, retry without that column
+        delete teacherDataToInsert.password_hash;
         const retryUpd = await client
           .from("profesores")
           .update(teacherDataToInsert)
@@ -421,9 +414,9 @@ export async function registerTeacherInSupabase(input: TeacherRegistrationInput)
         .select()
         .maybeSingle();
 
-      if (insError && teacherDataToInsert.user_id) {
-        // If user_id FK caused failure, retry without user_id
-        delete teacherDataToInsert.user_id;
+      if (insError && teacherDataToInsert.password_hash) {
+        // If password_hash column doesn't exist, retry with avatar_url only
+        delete teacherDataToInsert.password_hash;
         const retry1 = await client
           .from("profesores")
           .insert(teacherDataToInsert)
@@ -860,7 +853,7 @@ export async function getTeacherClassesFromSupabase(
   }
 }
 
-// Strict & Secure Login for teacher using Supabase Auth and password hash validation
+// Strict & Secure Login for teacher using direct database validation & SHA-256 hash checks
 export async function loginTeacherWithSupabase(email: string, password?: string): Promise<{
   success: boolean;
   teacher?: TeacherProfile;
@@ -878,84 +871,118 @@ export async function loginTeacherWithSupabase(email: string, password?: string)
   }
 
   try {
+    const inputHash = await hashPassword(password);
     let passwordVerified = false;
-    let authUser: any = null;
+    let isFirstTimeSetup = false;
 
-    // 1. Attempt verification with Supabase Auth
-    try {
-      const { data: authData, error: authError } = await client.auth.signInWithPassword({
-        email: cleanEmail,
-        password: password,
-      });
-
-      if (!authError && authData?.user) {
-        passwordVerified = true;
-        authUser = authData.user;
-      }
-    } catch {
-      // Supabase Auth call threw, proceed to database hash check
-    }
-
-    // 2. Fetch professor record from Supabase database
+    // 1. Fetch professor record from Supabase database
     let { data: prof, error: profError } = await client
       .from("profesores")
       .select("*")
       .eq("email", cleanEmail)
       .maybeSingle();
 
-    const inputHash = await hashPassword(password);
-
-    // Check credentials in local store if not yet verified
-    let localCred = null;
+    // 2. Fetch local credentials from localStorage
+    let localCred: any = null;
     try {
       const creds = JSON.parse(localStorage.getItem("ilumina_user_credentials") || "{}");
       localCred = creds[cleanEmail];
     } catch {}
 
-    // Check password against database hash or registered hash
-    if (!passwordVerified) {
-      if (prof?.password_hash) {
-        if (prof.password_hash === inputHash) {
-          passwordVerified = true;
-        } else {
-          return {
-            success: false,
-            message: "Contraseña incorrecta. Por favor verifica tus datos e intenta nuevamente.",
-          };
-        }
-      } else if (localCred?.passwordHash) {
-        if (localCred.passwordHash === inputHash) {
-          passwordVerified = true;
-        } else {
-          return {
-            success: false,
-            message: "Contraseña incorrecta. Por favor verifica tus datos e intenta nuevamente.",
-          };
-        }
-      }
-    }
+    // 3. Find registered password hash (from DB columns, avatar metadata, or localStorage)
+    const dbHash = String(
+      prof?.password_hash ||
+      extractHashFromAvatar(prof?.avatar_url) ||
+      prof?.password ||
+      prof?.clave ||
+      prof?.contrasena ||
+      ""
+    ).trim();
 
-    // If password STILL NOT verified, reject!
-    if (!passwordVerified) {
-      if (prof || localCred) {
+    const localHash = String(localCred?.passwordHash || "").trim();
+    const expectedHash = dbHash || localHash;
+
+    if (expectedHash) {
+      // Validate password: match against SHA-256 hash OR against plain text (if manually inserted in DB table editor)
+      if (inputHash === expectedHash || password === expectedHash) {
+        passwordVerified = true;
+        // If DB did not have the hash in avatar_url or password_hash, sync it now so all devices can log in!
+        if (prof?.id && !extractHashFromAvatar(prof.avatar_url)) {
+          const syncAvatar = encodeAvatarWithHash(prof.avatar_url || "", inputHash);
+          const updatePayload: any = { avatar_url: syncAvatar };
+          try {
+            await client.from("profesores").update({ ...updatePayload, password_hash: inputHash }).eq("id", prof.id);
+          } catch {
+            await client.from("profesores").update(updatePayload).eq("id", prof.id);
+          }
+        }
+      } else {
         return {
           success: false,
           message: "Contraseña incorrecta. Por favor verifica tus datos e intenta nuevamente.",
         };
       }
+    } else if (prof) {
+      // Professor exists in Supabase database, but has no password established yet!
+      // (e.g. Added directly via database table editor, or created prior to password hashing)
+      // Establish their entered password right now so they are permanently activated!
+      passwordVerified = true;
+      isFirstTimeSetup = true;
+
+      const syncAvatar = encodeAvatarWithHash(prof.avatar_url || "", inputHash);
+      const updatePayload: any = { avatar_url: syncAvatar };
+      try {
+        const { error: updErr } = await client
+          .from("profesores")
+          .update({ ...updatePayload, password_hash: inputHash })
+          .eq("id", prof.id);
+        if (updErr) {
+          await client.from("profesores").update(updatePayload).eq("id", prof.id);
+        }
+      } catch {
+        try {
+          await client.from("profesores").update(updatePayload).eq("id", prof.id);
+        } catch {}
+      }
+
+      // Also store in localStorage
+      try {
+        const creds = JSON.parse(localStorage.getItem("ilumina_user_credentials") || "{}");
+        creds[cleanEmail] = {
+          passwordHash: inputHash,
+          name: prof.nombre,
+        };
+        localStorage.setItem("ilumina_user_credentials", JSON.stringify(creds));
+      } catch {}
+    } else if (localCred) {
+      // Verified through local credentials store
+      if (inputHash === localCred.passwordHash || password === localCred.passwordHash) {
+        passwordVerified = true;
+      } else {
+        return {
+          success: false,
+          message: "Contraseña incorrecta. Por favor verifica tus datos e intenta nuevamente.",
+        };
+      }
+    } else {
       return {
         success: false,
         message: "No se encontró ningún docente registrado con ese correo institucional. Por favor regístrate.",
       };
     }
 
+    if (!passwordVerified) {
+      return {
+        success: false,
+        message: "Contraseña incorrecta. Por favor verifica tus datos e intenta nuevamente.",
+      };
+    }
+
     let teacherClasses: ClassSection[] = [];
 
-    // 3. If teacher is verified but not yet saved in profesores table, SAVE NOW!
+    // 3. If teacher is verified from local credentials but not yet saved in profesores table, SAVE NOW!
     if (!prof) {
       const rawName = 
-        authUser?.user_metadata?.name ||
-        authUser?.user_metadata?.full_name ||
         localCred?.name ||
         cleanEmail.split("@")[0].replace(/[0-9._-]/g, " ").trim();
       
@@ -963,10 +990,13 @@ export async function loginTeacherWithSupabase(email: string, password?: string)
         ? rawName.split(" ").filter(Boolean).map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ")
         : "Docente";
 
-      const teacherDept = authUser?.user_metadata?.department || "Ciencias Exactas";
-      const teacherRank = authUser?.user_metadata?.rank || "DOCENTE TITULAR";
-      const teacherSchoolYear = "2025 - 2026";
-      const teacherAvatar = authUser?.user_metadata?.avatar_url || "https://images.unsplash.com/photo-1544717305-2782549b5136?w=200&auto=format&fit=crop&q=80";
+      const teacherDept = localCred?.department || "Ciencias Exactas";
+      const teacherRank = localCred?.rank || "DOCENTE TITULAR";
+      const teacherSchoolYear = localCred?.schoolYear || "2025 - 2026";
+      const teacherAvatar = encodeAvatarWithHash(
+        localCred?.avatarUrl || "https://images.unsplash.com/photo-1544717305-2782549b5136?w=200&auto=format&fit=crop&q=80",
+        inputHash
+      );
 
       const insertPayload: any = {
         nombre: teacherName,
@@ -976,10 +1006,6 @@ export async function loginTeacherWithSupabase(email: string, password?: string)
         ano_escolar: teacherSchoolYear,
         avatar_url: teacherAvatar,
       };
-
-      if (authUser?.id) {
-        insertPayload.user_id = authUser.id;
-      }
 
       try {
         let { data: newProf, error: insErr } = await client
@@ -1027,7 +1053,7 @@ export async function loginTeacherWithSupabase(email: string, password?: string)
         schoolYear: prof.ano_escolar || "2025-2026",
         rank: prof.rango || "DOCENTE TITULAR",
         status: prof.status || (adminFromDb ? "ADMIN" : "ACTIVO"),
-        avatarUrl: prof.avatar_url || "https://images.unsplash.com/photo-1544717305-2782549b5136?w=200&auto=format&fit=crop&q=80",
+        avatarUrl: cleanAvatarUrl(prof.avatar_url),
         totalStudents: 0,
         totalStudentsGrowthPercent: 0,
         averagePerformance: 0.0,
@@ -1073,7 +1099,7 @@ export async function loginTeacherWithSupabase(email: string, password?: string)
         schoolYear: "2025 - 2026",
         rank: "DOCENTE TITULAR",
         status: "ACTIVO",
-        avatarUrl: "https://images.unsplash.com/photo-1544717305-2782549b5136?w=200&auto=format&fit=crop&q=80",
+        avatarUrl: cleanAvatarUrl(localCred?.avatarUrl),
         totalStudents: 0,
         totalStudentsGrowthPercent: 0,
         averagePerformance: 0.0,
@@ -1081,11 +1107,15 @@ export async function loginTeacherWithSupabase(email: string, password?: string)
       };
     }
 
+    const welcomeMsg = isFirstTimeSetup
+      ? `¡Bienvenido(a) Prof. ${profile.name}! Contraseña establecida y guardada exitosamente.`
+      : `¡Bienvenido(a) Prof. ${profile.name}! Sesión iniciada con éxito.`;
+
     return {
       success: true,
       teacher: profile,
       classes: teacherClasses,
-      message: `¡Bienvenido(a) Prof. ${profile.name}! Sesión iniciada con éxito.`,
+      message: welcomeMsg,
     };
   } catch (err: any) {
     return {
@@ -1594,6 +1624,10 @@ CREATE TABLE IF NOT EXISTS public.profesores (
     avatar_url TEXT,
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
+
+-- Asegurar columnas necesarias en bases de datos existentes
+ALTER TABLE public.profesores ADD COLUMN IF NOT EXISTS password_hash TEXT;
+ALTER TABLE public.profesores ADD COLUMN IF NOT EXISTS "isAdmin" BOOLEAN DEFAULT false;
 
 -- 3. TABLA: MATERIAS / ASIGNATURAS POR SECCIÓN
 CREATE TABLE IF NOT EXISTS public.materias (

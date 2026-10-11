@@ -1,5 +1,5 @@
 import { TeacherProfile, RegisteredStudent, Student, ClassSection } from "../types";
-import { getSupabaseClient, hashPassword } from "./supabase";
+import { getSupabaseClient, hashPassword, cleanAvatarUrl, encodeAvatarWithHash } from "./supabase";
 import { createEmptyGrades } from "../mockData";
 
 const REGISTERED_STUDENTS_KEY = "ilumina_registered_students";
@@ -514,7 +514,7 @@ export async function getAllTeachers(): Promise<TeacherProfile[]> {
           schoolYear: p.ano_escolar || existing?.schoolYear || "2025-2026",
           rank: p.rango || existing?.rank || "DOCENTE TITULAR",
           status: p.status || existing?.status || "ACTIVO",
-          avatarUrl: p.avatar_url || existing?.avatarUrl || "https://images.unsplash.com/photo-1544717305-2782549b5136?w=200&auto=format&fit=crop&q=80",
+          avatarUrl: cleanAvatarUrl(p.avatar_url || existing?.avatarUrl),
           totalStudents: existing?.totalStudents || 0,
           totalStudentsGrowthPercent: existing?.totalStudentsGrowthPercent || 0,
           averagePerformance: existing?.averagePerformance || 0.0,
@@ -546,6 +546,7 @@ export async function createTeacherByAdmin(data: {
   const cleanEmail = data.email.toLowerCase().trim();
   const passwordHash = data.password ? await hashPassword(data.password) : "";
   const avatar = data.avatarUrl || "https://images.unsplash.com/photo-1544717305-2782549b5136?w=200&auto=format&fit=crop&q=80";
+  const avatarToStore = passwordHash ? encodeAvatarWithHash(avatar, passwordHash) : avatar;
 
   // 1. Save in local credentials
   try {
@@ -558,7 +559,7 @@ export async function createTeacherByAdmin(data: {
       schoolYear: data.schoolYear.trim(),
       isAdmin: data.isAdmin,
       status: data.isAdmin ? "ADMIN" : "ACTIVO",
-      avatarUrl: avatar,
+      avatarUrl: cleanAvatarUrl(avatar),
     };
     localStorage.setItem("ilumina_user_credentials", JSON.stringify(creds));
     if (data.isAdmin) {
@@ -573,7 +574,7 @@ export async function createTeacherByAdmin(data: {
     rank: data.rank.trim().toUpperCase(),
     schoolYear: data.schoolYear.trim(),
     status: data.isAdmin ? "ADMIN" : "ACTIVO",
-    avatarUrl: avatar,
+    avatarUrl: cleanAvatarUrl(avatar),
     totalStudents: 0,
     totalStudentsGrowthPercent: 0,
     averagePerformance: 0.0,
@@ -584,23 +585,36 @@ export async function createTeacherByAdmin(data: {
   // 2. Save in Supabase profesores table
   try {
     const client: any = getSupabaseClient();
-    const { data: supaProf, error } = await client
+    const insertPayload: any = {
+      nombre: profile.name,
+      email: cleanEmail,
+      departamento: profile.department,
+      rango: profile.rank,
+      ano_escolar: profile.schoolYear,
+      avatar_url: avatarToStore,
+      "isAdmin": data.isAdmin,
+    };
+    if (passwordHash) {
+      insertPayload.password_hash = passwordHash;
+    }
+
+    let { data: supaProf, error } = await client
       .from("profesores")
-      .upsert(
-        {
-          nombre: profile.name,
-          email: cleanEmail,
-          departamento: profile.department,
-          rango: profile.rank,
-          ano_escolar: profile.schoolYear,
-          avatar_url: avatar,
-        },
-        { onConflict: "email" }
-      )
+      .upsert(insertPayload, { onConflict: "email" })
       .select()
       .maybeSingle();
 
-    if (!error && supaProf?.id) {
+    if (error && insertPayload.password_hash) {
+      delete insertPayload.password_hash;
+      const retry = await client
+        .from("profesores")
+        .upsert(insertPayload, { onConflict: "email" })
+        .select()
+        .maybeSingle();
+      supaProf = retry.data;
+    }
+
+    if (supaProf?.id) {
       profile.id = supaProf.id;
     }
   } catch (e) {
@@ -624,10 +638,11 @@ export async function updateTeacherByAdmin(
   const cleanEmail = teacher.email.toLowerCase().trim();
 
   // 1. Update local storage
+  let passwordHash = "";
   try {
     const creds = JSON.parse(localStorage.getItem("ilumina_user_credentials") || "{}");
     const existingCred = creds[cleanEmail] || {};
-    let passwordHash = existingCred.passwordHash;
+    passwordHash = existingCred.passwordHash || "";
     if (newPassword && newPassword.trim().length > 0) {
       passwordHash = await hashPassword(newPassword.trim());
     }
@@ -641,7 +656,7 @@ export async function updateTeacherByAdmin(
       schoolYear: teacher.schoolYear.trim(),
       isAdmin: Boolean(teacher.isAdmin),
       status: teacher.isAdmin ? "ADMIN" : (teacher.status || "ACTIVO"),
-      avatarUrl: teacher.avatarUrl,
+      avatarUrl: cleanAvatarUrl(teacher.avatarUrl),
     };
     localStorage.setItem("ilumina_user_credentials", JSON.stringify(creds));
 
@@ -660,6 +675,7 @@ export async function updateTeacherByAdmin(
         localStorage.setItem("ilumina_current_teacher", JSON.stringify({
           ...cur,
           ...teacher,
+          avatarUrl: cleanAvatarUrl(teacher.avatarUrl),
           isAdmin: Boolean(teacher.isAdmin),
         }));
       }
@@ -669,18 +685,39 @@ export async function updateTeacherByAdmin(
   // 2. Update Supabase
   try {
     const client: any = getSupabaseClient();
+    const avatarToStore = passwordHash 
+      ? encodeAvatarWithHash(teacher.avatarUrl || "", passwordHash)
+      : teacher.avatarUrl;
+
     const updatePayload: any = {
       nombre: teacher.name.trim(),
       departamento: teacher.department.trim(),
       rango: teacher.rank.trim().toUpperCase(),
       ano_escolar: teacher.schoolYear.trim(),
-      avatar_url: teacher.avatarUrl,
+      avatar_url: avatarToStore,
+      "isAdmin": Boolean(teacher.isAdmin),
     };
 
+    if (passwordHash) {
+      updatePayload.password_hash = passwordHash;
+    }
+
+    let err: any = null;
     if (teacher.id) {
-      await client.from("profesores").update(updatePayload).eq("id", teacher.id);
+      const res = await client.from("profesores").update(updatePayload).eq("id", teacher.id);
+      err = res.error;
     } else {
-      await client.from("profesores").update(updatePayload).eq("email", cleanEmail);
+      const res = await client.from("profesores").update(updatePayload).eq("email", cleanEmail);
+      err = res.error;
+    }
+
+    if (err && updatePayload.password_hash) {
+      delete updatePayload.password_hash;
+      if (teacher.id) {
+        await client.from("profesores").update(updatePayload).eq("id", teacher.id);
+      } else {
+        await client.from("profesores").update(updatePayload).eq("email", cleanEmail);
+      }
     }
   } catch (e) {
     console.warn("Could not update teacher in Supabase:", e);

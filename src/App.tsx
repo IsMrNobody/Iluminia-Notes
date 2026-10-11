@@ -23,7 +23,8 @@ import {
   getTeacherClassesFromSupabase,
   addStudentToSupabase,
   saveGradesToSupabase,
-  removeStudentFromClassInSupabase
+  removeStudentFromClassInSupabase,
+  cleanAvatarUrl
 } from "./lib/supabase";
 import { 
   Sparkles,
@@ -97,6 +98,7 @@ export default function App() {
             const firstEmail = Object.keys(creds)[0];
             parsed.email = firstEmail || "profesor@ilumina.edu";
           }
+          parsed.avatarUrl = cleanAvatarUrl(parsed.avatarUrl);
           return parsed;
         }
       } catch (e) {
@@ -787,6 +789,9 @@ export default function App() {
           <TeacherRegisterView
             onRegisterSuccess={(newTeacher, initialClassOrClasses, message) => {
               setTeacher(newTeacher);
+              try {
+                localStorage.setItem("ilumina_current_teacher", JSON.stringify(newTeacher));
+              } catch {}
               const rawClasses: ClassSection[] = Array.isArray(initialClassOrClasses)
                 ? initialClassOrClasses
                 : initialClassOrClasses ? [initialClassOrClasses] : [];
