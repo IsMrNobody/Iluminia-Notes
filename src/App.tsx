@@ -18,6 +18,7 @@ import {
   convertRegisteredToClassStudents,
   fetchRegisteredStudentsFromDatabase
 } from "./lib/adminService";
+import { AddStudentsModal, StudentCandidate } from "./components/AddStudentsModal";
 import { 
   getSupabaseClient, 
   createSubjectInSupabase, 
@@ -25,6 +26,7 @@ import {
   addStudentToSupabase,
   saveGradesToSupabase,
   removeStudentFromClassInSupabase,
+  deleteClassesFromSupabase,
   cleanAvatarUrl
 } from "./lib/supabase";
 import { 
@@ -397,6 +399,7 @@ export default function App() {
   const [newClassGrade, setNewClassGrade] = useState("1er Año");
   const [newClassSection, setNewClassSection] = useState("A");
   const [selectedSections, setSelectedSections] = useState<string[]>(["A", "B", "C", "D", "E", "F"]);
+  const [fillWithDefaultStudents, setFillWithDefaultStudents] = useState<boolean>(true);
   const [isCreatingClass, setIsCreatingClass] = useState(false);
 
   // Group classes by Subject + Grade Year for hierarchical subject-sections navigation
@@ -484,11 +487,13 @@ export default function App() {
   const handleSaveStudentGrades = async (studentId: string, updatedGrades: Student["grades"]) => {
     if (!currentClass) return;
 
-    // 1. Optimistic UI update
+    const targetClassId = currentClass.id;
+
+    // 1. Optimistic UI update - Strictly for the current class being evaluated!
     setClasses(prevClasses => {
       const nextClasses = prevClasses.map(cls => {
-        const studentIndex = cls.students.findIndex(s => s.id === studentId);
-        if (studentIndex === -1) return cls;
+        // IMPORTANT: Only update the specific class being graded! Do not leak grades to other subjects.
+        if (cls.id !== targetClassId) return cls;
 
         const updatedStudents = cls.students.map(s => {
           if (s.id === studentId) {
@@ -497,7 +502,7 @@ export default function App() {
               grades: updatedGrades
             };
           }
-          // Propagate updated evaluation criteria (name, description, weight) to other students in the section
+          // Propagate updated evaluation criteria (name, description, weight) to other students in THIS same class only
           return {
             ...s,
             grades: {
@@ -529,9 +534,9 @@ export default function App() {
       return nextClasses;
     });
 
-    // 2. Persist to database silently and reliably
+    // 2. Persist to database silently and reliably for this specific subject
     try {
-      await saveGradesToSupabase(currentClass.id, studentId, updatedGrades, currentClass.lapso || activeLapso);
+      await saveGradesToSupabase(targetClassId, studentId, updatedGrades, currentClass.lapso || activeLapso);
     } catch (e) {
       console.warn("Could not persist grades to Supabase:", e);
     }
@@ -540,34 +545,49 @@ export default function App() {
     setTimeout(() => setSuccessToast(""), 3000);
   };
 
-  // Handle adding a student to the selected class
-  const handleAddStudentSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newStudentFirst.trim() || !newStudentLast.trim() || !currentClass) return;
+  // Handle adding existing candidate students (from directory or any other section/year) to the current class
+  const handleAddExistingStudentsToClass = async (candidates: StudentCandidate[]) => {
+    if (!currentClass || candidates.length === 0) return;
 
-    const firstName = newStudentFirst.trim();
-    const lastName = newStudentLast.trim().toUpperCase();
+    // Filter candidates that might already exist by ID, cedula or normalized name
+    const existingIds = new Set(currentClass.students.map(s => (s.id || "").toLowerCase()));
+    const existingCedulas = new Set(currentClass.students.map(s => (s.cedula || "").toLowerCase().trim()).filter(Boolean));
+    const existingNames = new Set(currentClass.students.map(s => `${s.firstName.toLowerCase().trim()}_${s.lastName.toLowerCase().trim()}`));
 
-    // Reset form inputs immediately
-    setNewStudentFirst("");
-    setNewStudentLast("");
-    setIsAddStudentOpen(false);
-
-    // Call Supabase persistence
-    const res = await addStudentToSupabase(currentClass.id, {
-      firstName,
-      lastName,
-      currentClassStudentsCount: currentClass.students.length,
+    const toEnroll = candidates.filter(c => {
+      if (c.id && existingIds.has(c.id.toLowerCase())) return false;
+      if (c.cedula && existingCedulas.has(c.cedula.toLowerCase().trim())) return false;
+      const nameKey = `${c.firstName.toLowerCase().trim()}_${c.lastName.toLowerCase().trim()}`;
+      if (existingNames.has(nameKey)) return false;
+      return true;
     });
 
-    const newStudent = res.student;
+    if (toEnroll.length === 0) {
+      setSuccessToast("Los alumnos seleccionados ya están en la clase.");
+      setTimeout(() => setSuccessToast(""), 3000);
+      return;
+    }
 
+    const newStudents: Student[] = toEnroll.map((c, idx) => ({
+      id: c.id || `std-${Date.now()}-${idx}`,
+      firstName: c.firstName,
+      lastName: c.lastName,
+      cedula: c.cedula,
+      gradeYear: c.gradeYear,
+      sectionLetter: c.sectionLetter,
+      avatarUrl: c.avatarUrl || "",
+      grades: createEmptyGrades(),
+      attendanceRate: 100,
+      hasSubmittedLastQuiz: true,
+    }));
+
+    // Update state immediately
     setClasses(prevClasses => {
       const nextClasses = prevClasses.map(cls => {
         if (cls.id !== currentClass.id) return cls;
         return {
           ...cls,
-          students: [...cls.students, newStudent]
+          students: [...cls.students, ...newStudents],
         };
       });
 
@@ -578,7 +598,78 @@ export default function App() {
       return nextClasses;
     });
 
-    setSuccessToast("¡Alumno guardado!");
+    // Persist enrollments into Supabase matriculas
+    try {
+      const client: any = getSupabaseClient();
+      const baseCount = currentClass.students.length;
+      for (let i = 0; i < toEnroll.length; i++) {
+        const cand = toEnroll[i];
+        if (cand.id && !cand.id.startsWith("std-enr-") && !cand.id.startsWith("std-cand-")) {
+          await client.from("matriculas").upsert({
+            materia_id: currentClass.id,
+            alumno_id: cand.id,
+            numero_lista: baseCount + i + 1,
+            asistencia_porcentaje: 100,
+          }, { onConflict: "materia_id,alumno_id" }).catch(() => {});
+        } else {
+          await addStudentToSupabase(currentClass.id, {
+            firstName: cand.firstName,
+            lastName: cand.lastName,
+            cedula: cand.cedula,
+            avatarUrl: cand.avatarUrl,
+            currentClassStudentsCount: baseCount + i,
+          }).catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.warn("Error persisting enrollments:", e);
+    }
+
+    setSuccessToast(`¡${newStudents.length} ${newStudents.length === 1 ? "alumno agregado" : "alumnos agregados"} a la clase!`);
+    setTimeout(() => setSuccessToast(""), 3500);
+  };
+
+  // Handle adding a brand new manual student directly
+  const handleAddNewManualStudent = async (data: {
+    firstName: string;
+    lastName: string;
+    cedula: string;
+    gradeYear: string;
+    sectionLetter: string;
+  }) => {
+    if (!currentClass) return;
+
+    const res = await addStudentToSupabase(currentClass.id, {
+      firstName: data.firstName,
+      lastName: data.lastName,
+      cedula: data.cedula,
+      currentClassStudentsCount: currentClass.students.length,
+    });
+
+    const newStudent: Student = {
+      ...res.student,
+      cedula: data.cedula || undefined,
+      gradeYear: data.gradeYear,
+      sectionLetter: data.sectionLetter,
+    };
+
+    setClasses(prevClasses => {
+      const nextClasses = prevClasses.map(cls => {
+        if (cls.id !== currentClass.id) return cls;
+        return {
+          ...cls,
+          students: [...cls.students, newStudent],
+        };
+      });
+
+      if (teacher?.email || teacher?.id) {
+        const storageKey = (teacher.email || teacher.id || "default").toLowerCase();
+        localStorage.setItem(`ilumina_classes_${storageKey}`, JSON.stringify(nextClasses));
+      }
+      return nextClasses;
+    });
+
+    setSuccessToast("¡Alumno inscrito!");
     setTimeout(() => setSuccessToast(""), 3000);
   };
 
@@ -614,8 +705,77 @@ export default function App() {
     setTimeout(() => setSuccessToast(""), 3000);
   };
 
+  // Handle deleting one or multiple subject groups (materias)
+  const handleDeleteSubjectGroups = async (groupKeysToDelete: string[]) => {
+    if (!groupKeysToDelete || groupKeysToDelete.length === 0) return;
+
+    // Identify all class IDs associated with the selected group keys
+    const groupsToDelete = subjectGroups.filter(g => groupKeysToDelete.includes(g.key));
+    const classIdsToDelete: string[] = [];
+    groupsToDelete.forEach(g => {
+      g.sections.forEach(s => classIdsToDelete.push(s.id));
+    });
+
+    if (classIdsToDelete.length === 0) return;
+
+    // Update classes state immediately
+    setClasses(prevClasses => {
+      const nextClasses = prevClasses.filter(c => !classIdsToDelete.includes(c.id));
+      if (teacher?.email || teacher?.id) {
+        const storageKey = (teacher.email || teacher.id || "default").toLowerCase();
+        localStorage.setItem(`ilumina_classes_${storageKey}`, JSON.stringify(nextClasses));
+      }
+      return nextClasses;
+    });
+
+    // Reset current active subject / class if it was deleted
+    if (selectedSubjectKey && groupKeysToDelete.includes(selectedSubjectKey)) {
+      setSelectedSubjectKey(null);
+      setSelectedClassId(null);
+      setViewMode("subjects_list");
+    } else if (selectedClassId && classIdsToDelete.includes(selectedClassId)) {
+      setSelectedClassId(null);
+      setViewMode("subjects_list");
+    }
+
+    // Delete in Supabase in background
+    try {
+      await deleteClassesFromSupabase(classIdsToDelete);
+    } catch (err) {
+      console.warn("Error deleting subject classes from Supabase:", err);
+    }
+
+    const count = groupKeysToDelete.length;
+    setSuccessToast(count === 1 ? "¡Materia eliminada exitosamente!" : `¡${count} materias eliminadas exitosamente!`);
+    setTimeout(() => setSuccessToast(""), 3500);
+  };
+
+  // Handle deleting a single section
+  const handleDeleteSection = async (sectionId: string) => {
+    setClasses(prevClasses => {
+      const nextClasses = prevClasses.filter(c => c.id !== sectionId);
+      if (teacher?.email || teacher?.id) {
+        const storageKey = (teacher.email || teacher.id || "default").toLowerCase();
+        localStorage.setItem(`ilumina_classes_${storageKey}`, JSON.stringify(nextClasses));
+      }
+      return nextClasses;
+    });
+
+    if (selectedClassId === sectionId) {
+      setSelectedClassId(null);
+      setViewMode("subjects_list");
+    }
+
+    try {
+      await deleteClassesFromSupabase([sectionId]);
+    } catch {}
+
+    setSuccessToast("¡Sección eliminada!");
+    setTimeout(() => setSuccessToast(""), 3000);
+  };
+
   // Handle adding an additional section to an existing subject
-  const handleAddNewSectionToSubject = async (sectionLetter: string) => {
+  const handleAddNewSectionToSubject = async (sectionLetter: string, fillWithDefault: boolean = true) => {
     if (!currentSubjectGroup || !teacher) return;
     const cleanLetter = sectionLetter.trim().toUpperCase();
     if (currentSubjectGroup.sections.some(s => s.sectionLetter.toUpperCase() === cleanLetter)) {
@@ -642,18 +802,25 @@ export default function App() {
         : (result.newClass ? [result.newClass] : []);
 
       if (createdList.length > 0) {
-        // Automatically populate with pre-registered students for this year and section
+        // Automatically populate with pre-registered students for this year and section if requested
         const enrichedList = createdList.map(cls => {
-          if (!cls.students || cls.students.length === 0) {
-            const matching = getRegisteredStudentsForSection(cls.gradeYear, cls.sectionLetter);
-            if (matching.length > 0) {
-              return {
-                ...cls,
-                students: convertRegisteredToClassStudents(matching),
-              };
+          if (fillWithDefault) {
+            if (!cls.students || cls.students.length === 0) {
+              const matching = getRegisteredStudentsForSection(cls.gradeYear, cls.sectionLetter);
+              if (matching.length > 0) {
+                return {
+                  ...cls,
+                  students: convertRegisteredToClassStudents(matching),
+                };
+              }
             }
+            return cls;
+          } else {
+            return {
+              ...cls,
+              students: [],
+            };
           }
-          return cls;
         });
 
         setClasses(prev => {
@@ -662,7 +829,7 @@ export default function App() {
           localStorage.setItem(`ilumina_classes_${storageKey}`, JSON.stringify(next));
           return next;
         });
-        setSuccessToast(`¡Sección ${cleanLetter} agregada con alumnos!`);
+        setSuccessToast(fillWithDefault ? `¡Sección ${cleanLetter} agregada con alumnos!` : `¡Sección ${cleanLetter} creada vacía!`);
         setTimeout(() => setSuccessToast(""), 3000);
       }
     } else {
@@ -697,18 +864,26 @@ export default function App() {
       : (result.newClass ? [result.newClass] : []);
 
     if (result.success && createdList.length > 0) {
-      // Auto-fill students registered for this year and section
+      // Auto-fill students registered for this year and section if requested; otherwise leave empty for composite groups
       const enrichedList = createdList.map(cls => {
-        if (!cls.students || cls.students.length === 0) {
-          const matching = getRegisteredStudentsForSection(cls.gradeYear, cls.sectionLetter);
-          if (matching.length > 0) {
-            return {
-              ...cls,
-              students: convertRegisteredToClassStudents(matching),
-            };
+        if (fillWithDefaultStudents) {
+          if (!cls.students || cls.students.length === 0) {
+            const matching = getRegisteredStudentsForSection(cls.gradeYear, cls.sectionLetter);
+            if (matching.length > 0) {
+              return {
+                ...cls,
+                students: convertRegisteredToClassStudents(matching),
+              };
+            }
           }
+          return cls;
+        } else {
+          // Explicitly empty student list for mixed/composite subjects
+          return {
+            ...cls,
+            students: [],
+          };
         }
-        return cls;
       });
 
       setClasses(prev => {
@@ -751,30 +926,47 @@ export default function App() {
   // Global dynamic statistics aggregate for teacher profiles
   const globalAggregates = React.useMemo(() => {
     let totalScoreSum = 0;
-    let totalStudentsWeighted = 0;
+    let gradedCount = 0;
+    let totalStudentsCount = 0;
     classes.forEach(cls => {
       cls.students?.forEach(std => {
-        totalScoreSum += getWeightedFinalScore(std.grades);
-        totalStudentsWeighted += 1;
+        totalStudentsCount += 1;
+        const score = getWeightedFinalScore(std.grades);
+        if (score > 0) {
+          totalScoreSum += score;
+          gradedCount += 1;
+        }
       });
     });
 
     return {
-      averageScore: totalStudentsWeighted > 0 ? Number((totalScoreSum / totalStudentsWeighted).toFixed(1)) : 0.0,
-      totalStudents: totalStudentsWeighted
+      averageScore: gradedCount > 0 ? Number((totalScoreSum / gradedCount).toFixed(1)) : 0.0,
+      totalStudents: totalStudentsCount
     };
   }, [classes]);
 
   // Finding students with low averages (<10) for real-time alerts drawer
   const alertStudents = React.useMemo(() => {
-    const list: Array<{ student: Student; className: string; score: number }> = [];
+    const list: Array<{ 
+      student: Student; 
+      classId: string;
+      subjectName: string;
+      gradeYear: string;
+      sectionLetter: string;
+      className: string; 
+      score: number;
+    }> = [];
     classes.forEach(cls => {
       cls.students?.forEach(std => {
         const avg = getWeightedFinalScore(std.grades);
         if (avg < 10 && avg > 0) {
           list.push({
             student: std,
-            className: `${cls.gradeYear} - Sección ${cls.sectionLetter}`,
+            classId: cls.id,
+            subjectName: cls.subjectName,
+            gradeYear: cls.gradeYear,
+            sectionLetter: cls.sectionLetter,
+            className: `${cls.subjectName} • ${cls.gradeYear} - Sec. ${cls.sectionLetter}`,
             score: avg
           });
         }
@@ -1103,6 +1295,7 @@ export default function App() {
         <main ref={mainContentRef} className="flex-1 overflow-y-auto px-6 py-8 mt-16 md:mt-0 max-w-5xl w-full mx-auto">
           {selectedStudentId && currentStudent && currentClass ? (
             <GradingView
+              key={`${currentClass.id}-${currentStudent.id}-${activeLapso}`}
               student={currentStudent}
               className={`${currentClass.gradeYear} • ${currentClass.subjectName}`}
               onBack={() => setSelectedStudentId(null)}
@@ -1201,6 +1394,7 @@ export default function App() {
                       setViewMode("section_students");
                     }}
                     onOpenAddClass={() => setIsAddClassOpen(true)}
+                    onDeleteSubjectGroups={handleDeleteSubjectGroups}
                   />
                 ) : viewMode === "subject_sections" && currentSubjectGroup ? (
                   <SubjectSectionsView
@@ -1220,6 +1414,7 @@ export default function App() {
                       setViewMode("section_students");
                     }}
                     onAddNewSection={handleAddNewSectionToSubject}
+                    onDeleteSection={handleDeleteSection}
                   />
                 ) : currentClass ? (
                   <ClassOverviewView
@@ -1351,78 +1546,15 @@ export default function App() {
 
       {/* Adding Student Modal overlay the Dialog */}
       <AnimatePresence>
-        {isAddStudentOpen && (
-          <div className="fixed inset-0 bg-slate-950/45 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl max-w-md w-full border border-slate-200 overflow-hidden shadow-2xl"
-            >
-              <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
-                <div className="flex items-center gap-2">
-                  <div className="p-1.5 bg-blue-50 text-blue-600 rounded-lg">
-                    <UserPlus className="w-4 h-4" />
-                  </div>
-                  <h3 className="font-extrabold text-sm text-slate-900 uppercase tracking-tight">
-                    Inscribir Alumno
-                  </h3>
-                </div>
-                <button
-                  onClick={() => setIsAddStudentOpen(false)}
-                  className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-200 text-slate-400 hover:text-slate-600 transition cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              <form onSubmit={handleAddStudentSubmit} className="p-5 space-y-4">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
-                    Nombres del Alumno
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Ej: David Alejandro"
-                    value={newStudentFirst}
-                    onChange={(e) => setNewStudentFirst(e.target.value)}
-                    className="w-full text-xs font-semibold px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-blue-600 transition"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
-                    Apellidos del Alumno
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Ej: PÉREZ ROJAS"
-                    value={newStudentLast}
-                    onChange={(e) => setNewStudentLast(e.target.value)}
-                    className="w-full text-xs font-semibold px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-blue-600 transition"
-                  />
-                </div>
-
-                <div className="pt-2 flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setIsAddStudentOpen(false)}
-                    className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold uppercase tracking-wider transition cursor-pointer"
-                  >
-                    Cancelar
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold uppercase tracking-wider transition shadow-sm cursor-pointer"
-                  >
-                    Guardar e Inscribir
-                  </button>
-                </div>
-              </form>
-            </motion.div>
-          </div>
+        {isAddStudentOpen && currentClass && (
+          <AddStudentsModal
+            isOpen={isAddStudentOpen}
+            onClose={() => setIsAddStudentOpen(false)}
+            currentClass={currentClass}
+            allClasses={classes}
+            onAddExistingStudents={handleAddExistingStudentsToClass}
+            onAddNewManualStudent={handleAddNewManualStudent}
+          />
         )}
 
         {/* Adding Class/Subject Modal */}
@@ -1592,6 +1724,39 @@ export default function App() {
                   </button>
                 </div>
 
+                {/* Default student population checkbox for composite/mixed groups */}
+                <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5 transition-all">
+                  <label className="flex items-start gap-3 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={fillWithDefaultStudents}
+                      onChange={(e) => setFillWithDefaultStudents(e.target.checked)}
+                      className="mt-0.5 w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500 cursor-pointer accent-blue-600"
+                    />
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-bold text-slate-800">
+                          Rellenar con la nómina de estudiantes por defecto
+                        </span>
+                        {fillWithDefaultStudents ? (
+                          <span className="text-[10px] bg-blue-100 text-blue-700 font-bold px-1.5 py-0.5 rounded">
+                            Nómina por defecto
+                          </span>
+                        ) : (
+                          <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-1.5 py-0.5 rounded">
+                            Lista vacía (compuesta)
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">
+                        {fillWithDefaultStudents
+                          ? "Inscribe automáticamente los alumnos registrados para este año y secciones seleccionadas."
+                          : "Crear materia con nómina vacía (0 alumnos). Marca esta opción para asignaturas compuestas por alumnos de distintos años o secciones."}
+                      </p>
+                    </div>
+                  </label>
+                </div>
+
                 <div className="pt-2 flex justify-end gap-2">
                   <button
                     type="button"
@@ -1649,23 +1814,32 @@ export default function App() {
                 ) : (
                   alertStudents.map((item, idx) => (
                     <div 
-                      key={idx}
+                      key={`${item.classId}-${item.student.id}-${idx}`}
                       onClick={() => {
                         setSelectedClassId(item.classId);
+                        const key = `${item.subjectName.trim().toLowerCase()}___${item.gradeYear.trim().toLowerCase()}`;
+                        setSelectedSubjectKey(key);
+                        setViewMode("section_students");
+                        setActiveTab("classes");
                         setSelectedStudentId(item.student.id);
                         setIsAlertsOpen(false);
                       }}
-                      className="p-3 bg-rose-50/60 hover:bg-rose-100/70 rounded-xl border border-rose-100 flex items-center justify-between cursor-pointer transition"
-                      title="Ir a calificar alumno"
+                      className="p-3.5 bg-rose-50/60 hover:bg-rose-100/70 rounded-xl border border-rose-100 flex items-center justify-between cursor-pointer transition group"
+                      title={`Ir a calificar a ${item.student.firstName} en ${item.subjectName}`}
                     >
-                      <div>
-                        <p className="text-xs font-bold text-slate-900">
+                      <div className="min-w-0 pr-2">
+                        <p className="text-xs font-bold text-slate-900 group-hover:text-blue-700 transition-colors">
                           {item.student.lastName}, {item.student.firstName}
                         </p>
-                        <p className="text-[10px] text-slate-500">{item.className}</p>
+                        <p className="text-[11px] font-semibold text-rose-800 truncate mt-0.5">
+                          {item.subjectName}
+                        </p>
+                        <p className="text-[10px] text-slate-500">
+                          {item.gradeYear} • Sección {item.sectionLetter}
+                        </p>
                       </div>
-                      <div className="text-right">
-                        <span className="text-xs font-black text-rose-600 bg-rose-100 px-2 py-0.5 rounded-md">
+                      <div className="text-right shrink-0">
+                        <span className="text-xs font-black text-rose-600 bg-rose-100 px-2 py-0.5 rounded-md font-mono">
                           {item.score} / 20
                         </span>
                         <p className="text-[9px] text-rose-500 font-semibold mt-0.5">Bajo promedio</p>

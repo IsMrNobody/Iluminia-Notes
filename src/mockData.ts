@@ -52,44 +52,59 @@ export function createEmptyGrades(): StudentGrades {
 }
 
 export function getWeightedFinalScore(grades: StudentGrades): number {
-  let weightedSum = 0;
-  // academic
-  weightedSum += ((grades.academic.homework.score ?? 0) / 20) * grades.academic.homework.weight;
-  weightedSum += ((grades.academic.talentShow.score ?? 0) / 20) * grades.academic.talentShow.weight;
-  weightedSum += ((grades.academic.assembly.score ?? 0) / 20) * grades.academic.assembly.weight;
-  weightedSum += ((grades.academic.essay.score ?? 0) / 20) * grades.academic.essay.weight;
-  weightedSum += ((grades.academic.performance.score ?? 0) / 20) * grades.academic.performance.weight;
-  // ethical
-  weightedSum += ((grades.ethical.responsibility.score ?? 0) / 20) * grades.ethical.responsibility.weight;
-  weightedSum += ((grades.ethical.personalCare.score ?? 0) / 20) * grades.ethical.personalCare.weight;
+  if (!grades) return 0;
 
-  return Number(weightedSum.toFixed(2));
+  const academicItems = grades.academic ? Object.values(grades.academic) : [];
+  const ethicalItems = grades.ethical ? Object.values(grades.ethical) : [];
+  const allItems = [...academicItems, ...ethicalItems];
+
+  let weightedSum = 0;
+  let filledWeight = 0;
+  let simpleSum = 0;
+  let filledCount = 0;
+
+  for (const item of allItems) {
+    if (!item) continue;
+    const score = item.score;
+    if (score !== undefined && score !== null && !isNaN(score)) {
+      const clampedScore = Math.max(0, Math.min(20, Number(score)));
+      const weight = Number(item.weight) || 0;
+      weightedSum += clampedScore * weight;
+      filledWeight += weight;
+      simpleSum += clampedScore;
+      filledCount += 1;
+    }
+  }
+
+  if (filledCount === 0) return 0;
+
+  // Real weighted average calculation: sum(score * weight) / sum(weight)
+  const result = filledWeight > 0 ? (weightedSum / filledWeight) : (simpleSum / filledCount);
+  return Number(Math.max(0, Math.min(20, result)).toFixed(2));
 }
 
 // Percent completion based on criteria filled
 export function getGradingProgressPercent(grades: StudentGrades): number {
+  if (!grades) return 0;
+
+  const academicItems = grades.academic ? Object.values(grades.academic) : [];
+  const ethicalItems = grades.ethical ? Object.values(grades.ethical) : [];
+  const allItems = [...academicItems, ...ethicalItems];
+
   let filledWeight = 0;
   let totalWeight = 0;
 
-  totalWeight += grades.academic.homework.weight || 0;
-  totalWeight += grades.academic.talentShow.weight || 0;
-  totalWeight += grades.academic.assembly.weight || 0;
-  totalWeight += grades.academic.essay.weight || 0;
-  totalWeight += grades.academic.performance.weight || 0;
-  totalWeight += grades.ethical.responsibility.weight || 0;
-  totalWeight += grades.ethical.personalCare.weight || 0;
+  for (const item of allItems) {
+    if (!item) continue;
+    const w = Number(item.weight) || 0;
+    totalWeight += w;
+    if (item.score !== undefined && item.score !== null && !isNaN(item.score)) {
+      filledWeight += w;
+    }
+  }
 
   if (totalWeight <= 0) totalWeight = 100;
-
-  if (grades.academic.homework.score !== undefined) filledWeight += grades.academic.homework.weight || 0;
-  if (grades.academic.talentShow.score !== undefined) filledWeight += grades.academic.talentShow.weight || 0;
-  if (grades.academic.assembly.score !== undefined) filledWeight += grades.academic.assembly.weight || 0;
-  if (grades.academic.essay.score !== undefined) filledWeight += grades.academic.essay.weight || 0;
-  if (grades.academic.performance.score !== undefined) filledWeight += grades.academic.performance.weight || 0;
-  if (grades.ethical.responsibility.score !== undefined) filledWeight += grades.ethical.responsibility.weight || 0;
-  if (grades.ethical.personalCare.score !== undefined) filledWeight += grades.ethical.personalCare.weight || 0;
-
-  return Math.round((filledWeight / totalWeight) * 100);
+  return Math.min(100, Math.round((filledWeight / totalWeight) * 100));
 }
 
 // Helper to fill scores to get exact final score outcomes
@@ -129,11 +144,13 @@ export const initialPendingTasks: PendingGradeTask[] = [
   },
 ];
 
+const currentYear = new Date().getFullYear();
+
 export const initialTeacherProfile: TeacherProfile = {
   name: "Carmen C. Moya",
   email: "carmen.moya@ilumina.edu",
   department: "CRP / Matemáticas",
-  schoolYear: "2025-2026",
+  schoolYear: `${currentYear}-${currentYear + 1}`,
   rank: "DOCENTE SENIOR",
   status: "ACTIVO",
   avatarUrl: "https://lh3.googleusercontent.com/aida-public/AB6AXuCODeDyOYX0lfZ9qj4a6BRtotV3UcIsDNvvgicsnY9VD1lUVA4OV7eGtZFVn-Biak23fvBAD9adtOHxPG_kXrOJx7TyHTsvzmECbmW_hz_X2JARBxZqc5t7kAcQkxmdhpvVpy6PrR9WbpD5OMJyVMk0SEE1zzMuIpnQtXuiGiUJCggH2nnoJdQd4NVKG2h6FT8Zf85UyRFiITotQwec1Uhvn22GddqOYgaIxlyMI5Xq3s9L72VeX4TeQYojZAOguuQYX40lJSNPwRo",

@@ -1,6 +1,7 @@
 import React, { useMemo } from "react";
 import { ClassSection, PendingGradeTask, TeacherProfile, SubjectGroup } from "../types";
 import { getWeightedFinalScore } from "../mockData";
+import { getSubjectTheme } from "../utils/subjectThemes";
 import { 
   Bell, 
   ChevronRight, 
@@ -443,10 +444,12 @@ export default function DashboardView({
         {subjectGroups.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {subjectGroups.map((group) => {
+              const theme = getSubjectTheme(group.subjectName);
+
               return (
                 <div 
                   key={group.key}
-                  className="bg-white border border-slate-200/80 rounded-2xl overflow-hidden shadow-sm hover:shadow-md hover:border-blue-200 transition-all flex flex-col justify-between group"
+                  className="bg-white border border-slate-200/80 rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-all flex flex-col justify-between group"
                 >
                   {/* Graphics Cover */}
                   <div 
@@ -471,12 +474,12 @@ export default function DashboardView({
                         className="w-full h-full object-cover opacity-70 group-hover:scale-105 transition-transform duration-500"
                       />
                     ) : (
-                      <div className="w-full h-full bg-linear-to-tr from-blue-700 to-indigo-900 opacity-80" />
+                      <div className={`w-full h-full bg-gradient-to-r ${theme.bgGradient} opacity-85`} />
                     )}
                     <div className="absolute inset-0 bg-gradient-to-t from-slate-900/90 via-slate-950/40 to-transparent"></div>
                     
                     <div className="absolute top-4 left-4 flex items-center gap-1.5 flex-wrap">
-                      <span className="bg-blue-500/90 text-white font-bold text-[10px] tracking-widest px-2.5 py-1 rounded-full uppercase backdrop-blur-xs">
+                      <span className={`${theme.badgeBg} text-white font-bold text-[10px] tracking-widest px-2.5 py-1 rounded-full uppercase backdrop-blur-xs shadow-xs`}>
                         {group.department}
                       </span>
                     </div>
@@ -490,7 +493,7 @@ export default function DashboardView({
                           {group.gradeYear}
                         </span>
                       </div>
-                      <p className="text-[11px] text-blue-200 font-medium truncate mt-0.5">
+                      <p className="text-[11px] text-white/80 font-medium truncate mt-0.5">
                         Profesor: <strong className="text-white">{teacher.name}</strong> • {group.sections.length} {group.sections.length === 1 ? "sección" : "secciones"}
                       </p>
                     </div>
@@ -513,7 +516,7 @@ export default function DashboardView({
                               if (mainEl) mainEl.scrollTop = 0;
                               onSelectClass(sec.id); 
                             }}
-                            className="bg-blue-50 hover:bg-blue-600 hover:text-white text-blue-700 text-xs font-black px-2.5 py-1 rounded-lg border border-blue-200/70 transition-colors cursor-pointer"
+                            className={`text-xs font-black px-2.5 py-1 rounded-lg border transition-colors cursor-pointer ${theme.pillBg} ${theme.pillText} ${theme.pillBorder} ${theme.pillHoverBg}`}
                             title={`Ir a nómina de Sección ${sec.sectionLetter}`}
                           >
                             Sec. {sec.sectionLetter}
@@ -521,7 +524,7 @@ export default function DashboardView({
                         ))}
                       </div>
                       <span className="text-xs font-mono bg-slate-50 text-slate-700 font-bold px-2 py-1 rounded-md border border-slate-200/60 whitespace-nowrap">
-                        Prom: {group.averageScore > 0 ? `${group.averageScore} / 20` : "S/N"} ({group.totalStudents} {group.totalStudents === 1 ? "alumno" : "alumnos"})
+                        Prom: <strong className={theme.statText}>{group.averageScore > 0 ? `${group.averageScore} / 20` : "S/N"}</strong> ({group.totalStudents} {group.totalStudents === 1 ? "alumno" : "alumnos"})
                       </span>
                     </div>
 
@@ -539,7 +542,7 @@ export default function DashboardView({
                             onSelectClass(group.sections[0].id);
                           }
                         }}
-                        className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs tracking-wider uppercase py-2.5 px-3 rounded-xl transition-all shadow-sm shadow-blue-200 flex items-center justify-center gap-1.5 cursor-pointer group"
+                        className={`flex-1 ${theme.btnBg} text-white font-bold text-xs tracking-wider uppercase py-2.5 px-3 rounded-xl transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer group`}
                       >
                         <Users className="w-3.5 h-3.5" />
                         <span>Ver Alumnos ({group.totalStudents})</span>

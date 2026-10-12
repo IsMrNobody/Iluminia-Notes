@@ -1,6 +1,8 @@
 import React, { useState } from "react";
 import { SubjectGroup, ClassSection } from "../types";
 import { getWeightedFinalScore } from "../mockData";
+import { getCurrentSchoolYear } from "../lib/adminService";
+import { getSubjectTheme } from "../utils/subjectThemes";
 import { 
   ArrowLeft, 
   Users, 
@@ -13,7 +15,8 @@ import {
   GraduationCap,
   Sparkles,
   School,
-  Layers
+  Layers,
+  Trash2
 } from "lucide-react";
 import { motion } from "motion/react";
 
@@ -25,6 +28,7 @@ interface SubjectSectionsViewProps {
   onBack: () => void;
   onSelectSection: (sectionId: string) => void;
   onAddNewSection?: (sectionLetter: string) => void;
+  onDeleteSection?: (sectionId: string) => void;
 }
 
 export default function SubjectSectionsView({
@@ -34,10 +38,12 @@ export default function SubjectSectionsView({
   teacherName,
   onBack,
   onSelectSection,
-  onAddNewSection
+  onAddNewSection,
+  onDeleteSection
 }: SubjectSectionsViewProps) {
   const [isAddSectionModalOpen, setIsAddSectionModalOpen] = useState(false);
   const [newSectionLetter, setNewSectionLetter] = useState("");
+  const [sectionToDelete, setSectionToDelete] = useState<ClassSection | null>(null);
 
   const existingLetters = subjectGroup.sections.map(s => s.sectionLetter.toUpperCase());
   const suggestedLetters = ["A", "B", "C", "D", "E", "F", "U"].filter(l => !existingLetters.includes(l));
@@ -62,6 +68,8 @@ export default function SubjectSectionsView({
   const overallAverage = totalGradedStudents > 0 
     ? (totalScoreSum / totalGradedStudents).toFixed(1) 
     : "0.0";
+
+  const theme = getSubjectTheme(subjectGroup.subjectName);
 
   const handleAddSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -92,14 +100,14 @@ export default function SubjectSectionsView({
           </button>
           <div>
             <div className="flex items-center gap-2 text-slate-400">
-              <Layers className="w-4 h-4 text-blue-600" />
+              <Layers className={`w-4 h-4 ${theme.primary}`} />
               <span className="text-[11px] font-extrabold tracking-wider uppercase">
                 SECCIONES ASIGNADAS
               </span>
             </div>
             <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight mt-1 flex items-center gap-2">
               <span>{subjectGroup.subjectName}</span>
-              <span className="text-blue-600 text-lg sm:text-xl font-bold bg-blue-50 px-2.5 py-0.5 rounded-lg border border-blue-100">
+              <span className={`${theme.primary} text-lg sm:text-xl font-bold ${theme.pillBg} px-2.5 py-0.5 rounded-lg border ${theme.pillBorder}`}>
                 {subjectGroup.gradeYear}
               </span>
             </h2>
@@ -112,7 +120,7 @@ export default function SubjectSectionsView({
         {onAddNewSection && (
           <button
             onClick={() => setIsAddSectionModalOpen(true)}
-            className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition cursor-pointer shadow-sm shadow-blue-200 self-start sm:self-center"
+            className={`px-4 py-2.5 rounded-xl ${theme.btnBg} text-white font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition cursor-pointer shadow-sm self-start sm:self-center`}
           >
             <Plus className="w-4 h-4" />
             <span>Agregar Sección</span>
@@ -128,19 +136,20 @@ export default function SubjectSectionsView({
           </span>
           {allSubjectGroups.map((grp) => {
             const isSelected = grp.key === subjectGroup.key;
+            const grpTheme = getSubjectTheme(grp.subjectName);
             return (
               <button
                 key={grp.key}
                 onClick={() => onSelectSubjectGroup(grp.key)}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-2 whitespace-nowrap cursor-pointer ${
                   isSelected
-                    ? "bg-slate-900 text-white shadow-xs"
+                    ? `${grpTheme.badgeBg} text-white shadow-xs`
                     : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
                 }`}
               >
                 <span>{grp.subjectName}</span>
                 <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${
-                  isSelected ? "bg-slate-700 text-slate-200" : "bg-slate-100 text-slate-500"
+                  isSelected ? "bg-black/20 text-white" : "bg-slate-100 text-slate-500"
                 }`}>
                   {grp.gradeYear}
                 </span>
@@ -199,7 +208,7 @@ export default function SubjectSectionsView({
             {subjectGroup.gradeYear.split(" ")[0]}
           </span>
           <span className="text-[10px] text-slate-500 font-medium">
-            2025 - 2026
+            {getCurrentSchoolYear()}
           </span>
         </div>
       </div>
@@ -221,8 +230,9 @@ export default function SubjectSectionsView({
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {subjectGroup.sections.map((section) => {
             const studentCount = section.students?.length || 0;
-            const secAverage = studentCount > 0
-              ? section.students.reduce((sum, s) => sum + getWeightedFinalScore(s.grades), 0) / studentCount
+            const gradedStudents = section.students?.filter(s => getWeightedFinalScore(s.grades) > 0) || [];
+            const secAverage = gradedStudents.length > 0
+              ? Number((gradedStudents.reduce((sum, s) => sum + getWeightedFinalScore(s.grades), 0) / gradedStudents.length).toFixed(1))
               : 0;
             const passingCount = section.students?.filter(s => getWeightedFinalScore(s.grades) >= 10).length || 0;
             const failingCount = section.students?.filter(s => {
@@ -233,13 +243,13 @@ export default function SubjectSectionsView({
             return (
               <div
                 key={section.id}
-                className="bg-white border border-slate-200 rounded-2xl p-5 hover:border-blue-300 hover:shadow-md transition-all flex flex-col justify-between group"
+                className="bg-white border border-slate-200 rounded-2xl p-5 hover:border-slate-300 hover:shadow-md transition-all flex flex-col justify-between group"
               >
                 <div>
                   {/* Top card header */}
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex items-center gap-3">
-                      <div className="w-12 h-12 rounded-xl bg-linear-to-br from-blue-600 to-indigo-700 text-white flex items-center justify-center font-black text-xl shadow-xs group-hover:scale-105 transition-transform">
+                      <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${theme.bgGradient} text-white flex items-center justify-center font-black text-xl shadow-xs group-hover:scale-105 transition-transform`}>
                         {section.sectionLetter}
                       </div>
                       <div>
@@ -257,7 +267,7 @@ export default function SubjectSectionsView({
                       </div>
                     </div>
 
-                    <span className="text-xs font-mono font-bold bg-blue-50 text-blue-700 px-2.5 py-1 rounded-lg border border-blue-100">
+                    <span className={`text-xs font-mono font-bold ${theme.pillBg} ${theme.pillText} px-2.5 py-1 rounded-lg border ${theme.pillBorder}`}>
                       {secAverage > 0 ? `${secAverage.toFixed(1)} / 20` : "Sin notas"}
                     </span>
                   </div>
@@ -280,15 +290,26 @@ export default function SubjectSectionsView({
                 </div>
 
                 {/* Card Action Buttons */}
-                <div className="flex gap-2 pt-2 border-t border-slate-100">
+                <div className="flex gap-2 pt-2 border-t border-slate-100 items-center">
                   <button
                     onClick={() => onSelectSection(section.id)}
-                    className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs tracking-wider uppercase py-2.5 px-3 rounded-xl transition-all shadow-sm shadow-blue-200 flex items-center justify-center gap-1.5 cursor-pointer"
+                    className={`flex-1 ${theme.btnBg} text-white font-bold text-xs tracking-wider uppercase py-2.5 px-3 rounded-xl transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer`}
                   >
                     <Users className="w-3.5 h-3.5" />
                     <span>Ver Lista de Alumnos</span>
                     <ChevronRight className="w-3.5 h-3.5 ml-0.5 group-hover:translate-x-0.5 transition-transform" />
                   </button>
+
+                  {onDeleteSection && (
+                    <button
+                      type="button"
+                      onClick={() => setSectionToDelete(section)}
+                      className="p-2.5 rounded-xl border border-slate-200 hover:border-rose-300 hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition cursor-pointer"
+                      title={`Eliminar Sección ${section.sectionLetter}`}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -360,6 +381,53 @@ export default function SubjectSectionsView({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Section Modal */}
+      {sectionToDelete && (
+        <div className="fixed inset-0 bg-slate-950/50 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-sm w-full border border-slate-200 overflow-hidden shadow-2xl p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-black text-sm text-slate-900">
+                  ¿Eliminar Sección {sectionToDelete.sectionLetter}?
+                </h3>
+                <p className="text-xs text-slate-500">
+                  {subjectGroup.subjectName} • {subjectGroup.gradeYear}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 bg-amber-50 border border-amber-200 rounded-xl p-3 leading-relaxed">
+              Esta sección contiene <strong>{sectionToDelete.students?.length || 0} estudiantes</strong>. Se eliminará de la nómina y de la base de datos.
+            </p>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setSectionToDelete(null)}
+                className="px-4 py-2 rounded-xl border border-slate-200 text-slate-700 text-xs font-bold"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onDeleteSection && sectionToDelete) {
+                    onDeleteSection(sectionToDelete.id);
+                    setSectionToDelete(null);
+                  }
+                }}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold uppercase shadow-sm"
+              >
+                Sí, Eliminar Sección
+              </button>
+            </div>
           </div>
         </div>
       )}

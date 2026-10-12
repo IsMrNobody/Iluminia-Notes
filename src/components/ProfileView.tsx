@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { TeacherProfile } from "../types";
-import { isUserAdmin } from "../lib/adminService";
+import { isUserAdmin, getCurrentSchoolYear } from "../lib/adminService";
 import { 
   User, 
   ShieldCheck, 
@@ -203,7 +203,7 @@ export default function ProfileView({
             },
             { 
               title: "Calendario Académico", 
-              desc: "Ver horario del periodo 2025-2026", 
+              desc: `Ver horario del periodo ${teacher.schoolYear || getCurrentSchoolYear()}`, 
               icon: <Calendar className="w-5 h-5 text-slate-400" /> 
             }
           ].map((item, idx) => (

@@ -28,6 +28,9 @@ export interface Student {
   grades: StudentGrades;
   attendanceRate: number; // 0 to 100%
   hasSubmittedLastQuiz: boolean;
+  cedula?: string;
+  gradeYear?: string;
+  sectionLetter?: string;
 }
 
 export interface ClassSection {

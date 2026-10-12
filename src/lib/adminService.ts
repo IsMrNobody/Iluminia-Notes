@@ -217,26 +217,122 @@ export function extractStudentMetadata(alumno: any): { gradeYear: string; sectio
 }
 
 /**
+ * Calculate the current academic school year dynamically based on the current date.
+ * Always starts from the current year to the following year (e.g. 2026/2027 or 2026 - 2027).
+ */
+export function getCurrentSchoolYear(separator: " - " | "/" | "-" = " - "): string {
+  const currentYear = new Date().getFullYear();
+  return `${currentYear}${separator}${currentYear + 1}`;
+}
+
+export function getYearSearchCodes(year: string): { code: string; num: string; label: string } {
+  const clean = (year || "").toLowerCase().trim();
+  if (clean.includes("2")) return { code: "2do", num: "2", label: "2do Año" };
+  if (clean.includes("3")) return { code: "3er", num: "3", label: "3er Año" };
+  if (clean.includes("4")) return { code: "4to", num: "4", label: "4to Año" };
+  if (clean.includes("5")) return { code: "5to", num: "5", label: "5to Año" };
+  return { code: "1er", num: "1", label: "1er Año" };
+}
+
+/**
+ * Fetch counts of registered students grouped by gradeYear efficiently (zero row downloads via HEAD count)
+ */
+export async function fetchStudentCountsByYear(): Promise<Record<string, number>> {
+  const client: any = getSupabaseClient();
+  const counts: Record<string, number> = {
+    "1er Año": 0,
+    "2do Año": 0,
+    "3er Año": 0,
+    "4to Año": 0,
+    "5to Año": 0,
+  };
+
+  try {
+    const yearConfigs = [
+      { yr: "1er Año", code: "1er", num: "1" },
+      { yr: "2do Año", code: "2do", num: "2" },
+      { yr: "3er Año", code: "3er", num: "3" },
+      { yr: "4to Año", code: "4to", num: "4" },
+      { yr: "5to Año", code: "5to", num: "5" },
+    ];
+
+    const results = await Promise.all(
+      yearConfigs.map(c =>
+        client
+          .from("alumnos")
+          .select("*", { count: "exact", head: true })
+          .or(`email.ilike.%${c.code}%,avatar_url.ilike.%yr=${c.code}%,avatar_url.ilike.%yr=${c.num}%`)
+      )
+    );
+
+    yearConfigs.forEach((c, idx) => {
+      counts[c.yr] = results[idx]?.count ?? 0;
+    });
+
+    return counts;
+  } catch (err) {
+    console.warn("Could not fetch student counts by year:", err);
+    const cached = getRegisteredStudents();
+    cached.forEach(s => {
+      const yr = formatGradeYear(s.gradeYear);
+      if (counts[yr] !== undefined) counts[yr]++;
+    });
+    return counts;
+  }
+}
+
+/**
  * Fetch registered students directly from Supabase database (alumnos table)
- * Optionally filters by selectedYear
+ * Queries specifically by selectedYear on Supabase to minimize read operations for large student bodies
  */
 export async function fetchRegisteredStudentsFromDatabase(selectedYear?: string): Promise<RegisteredStudent[]> {
   purgeMockStudents();
   const client: any = getSupabaseClient();
+  const targetYearStr = typeof selectedYear === "string" ? selectedYear.trim() : "";
+  const isFilteringYear = !!targetYearStr && targetYearStr !== "ALL";
 
   try {
-    const { data: supaAlumnos, error: queryErr } = await client
-      .from("alumnos")
-      .select("*")
-      .order("nombres", { ascending: true });
+    let supaAlumnos: any[] = [];
+    let queryErr: any = null;
+
+    if (isFilteringYear) {
+      // High efficiency targeted query: only reads rows for the selected school year from PostgreSQL
+      const { code, num, label } = getYearSearchCodes(targetYearStr);
+      const res = await client
+        .from("alumnos")
+        .select("*")
+        .or(`email.ilike.%${code}%,avatar_url.ilike.%yr=${code}%,avatar_url.ilike.%yr=${num}%`)
+        .order("nombres", { ascending: true });
+
+      supaAlumnos = res.data || [];
+      queryErr = res.error;
+    } else {
+      const res = await client
+        .from("alumnos")
+        .select("*")
+        .order("nombres", { ascending: true });
+
+      supaAlumnos = res.data || [];
+      queryErr = res.error;
+    }
 
     if (queryErr) {
       console.warn("Could not fetch alumnos from Supabase:", queryErr);
-      return getRegisteredStudents();
+      const cached = getRegisteredStudents();
+      if (isFilteringYear) {
+        const normSelected = normalizeYear(targetYearStr);
+        return cached.filter(s => normalizeYear(s.gradeYear) === normSelected);
+      }
+      return cached;
     }
 
     if (!supaAlumnos || supaAlumnos.length === 0) {
-      localStorage.removeItem(REGISTERED_STUDENTS_KEY);
+      if (isFilteringYear) {
+        // Clear only this year's cached students if DB has 0 for this year
+        const normTarget = normalizeYear(targetYearStr);
+        const cached = getRegisteredStudents().filter(s => normalizeYear(s.gradeYear) !== normTarget);
+        localStorage.setItem(REGISTERED_STUDENTS_KEY, JSON.stringify(cached));
+      }
       return [];
     }
 
@@ -245,29 +341,53 @@ export async function fetchRegisteredStudentsFromDatabase(selectedYear?: string)
       .filter((a: any) => !isMockStudent({ id: a.id, cedula: a.cedula }))
       .map((a: any) => {
         const meta = extractStudentMetadata(a);
+        const resolvedYear = formatGradeYear(meta.gradeYear || (isFilteringYear ? targetYearStr : "1er Año"));
         return {
           id: a.id,
           firstName: a.nombres || "",
           lastName: a.apellidos || "",
           cedula: a.cedula || "",
-          gradeYear: meta.gradeYear,
-          sectionLetter: meta.sectionLetter,
+          gradeYear: resolvedYear,
+          sectionLetter: meta.sectionLetter || "A",
           avatarUrl: cleanAvatarUrl(a.avatar_url),
           createdAt: a.created_at ? a.created_at.slice(0, 10) : new Date().toISOString().slice(0, 10),
         };
       });
 
-    localStorage.setItem(REGISTERED_STUDENTS_KEY, JSON.stringify(list));
+    // Merge into local cache without wiping other years
+    try {
+      const currentCached = getRegisteredStudents();
+      const map = new Map<string, RegisteredStudent>();
+      currentCached.forEach(s => map.set(s.id || s.cedula, s));
+      list.forEach(s => map.set(s.id || s.cedula, s));
 
-    if (selectedYear && selectedYear !== "ALL") {
-      const normSelected = normalizeYear(selectedYear);
+      if (isFilteringYear) {
+        const normTarget = normalizeYear(targetYearStr);
+        const liveIds = new Set(list.map(s => s.id));
+        const liveCedulas = new Set(list.map(s => s.cedula));
+        for (const [key, s] of map.entries()) {
+          if (normalizeYear(s.gradeYear) === normTarget && !liveIds.has(s.id) && !liveCedulas.has(s.cedula)) {
+            map.delete(key);
+          }
+        }
+      }
+      localStorage.setItem(REGISTERED_STUDENTS_KEY, JSON.stringify(Array.from(map.values())));
+    } catch {}
+
+    if (isFilteringYear) {
+      const normSelected = normalizeYear(targetYearStr);
       return list.filter(s => normalizeYear(s.gradeYear) === normSelected);
     }
 
     return list;
   } catch (err) {
     console.warn("Error fetching students from database:", err);
-    return getRegisteredStudents();
+    const cached = getRegisteredStudents();
+    if (isFilteringYear) {
+      const normSelected = normalizeYear(targetYearStr);
+      return cached.filter(s => normalizeYear(s.gradeYear) === normSelected);
+    }
+    return cached;
   }
 }
 
@@ -391,7 +511,8 @@ export async function deleteRegisteredStudent(studentId: string): Promise<boolea
 /**
  * Normalize year string for comparisons, e.g. "1er año" -> "1"
  */
-function normalizeYear(year: string): string {
+export function normalizeYear(year: string): string {
+  if (typeof year !== "string") return "";
   const clean = year.toLowerCase().trim();
   if (clean.includes("1")) return "1";
   if (clean.includes("2")) return "2";
@@ -517,7 +638,7 @@ export async function getAllTeachers(): Promise<TeacherProfile[]> {
             name: data.name || "Docente Registrado",
             email: cleanEmail,
             department: data.department || "Ciencias Exactas",
-            schoolYear: data.schoolYear || "2025-2026",
+            schoolYear: data.schoolYear || getCurrentSchoolYear(),
             rank: data.rank || "DOCENTE TITULAR",
             status: data.isAdmin ? "ADMIN" : (data.status || "ACTIVO"),
             avatarUrl: data.avatarUrl || "https://images.unsplash.com/photo-1544717305-2782549b5136?w=200&auto=format&fit=crop&q=80",
@@ -557,7 +678,7 @@ export async function getAllTeachers(): Promise<TeacherProfile[]> {
           name: p.nombre || existing?.name || "Docente",
           email: email,
           department: p.departamento || existing?.department || "Ciencias",
-          schoolYear: p.ano_escolar || existing?.schoolYear || "2025-2026",
+          schoolYear: p.ano_escolar || existing?.schoolYear || getCurrentSchoolYear(),
           rank: p.rango || existing?.rank || "DOCENTE TITULAR",
           status: p.status || existing?.status || "ACTIVO",
           avatarUrl: cleanAvatarUrl(p.avatar_url || existing?.avatarUrl),

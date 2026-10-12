@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { ClassSection, Student } from "../types";
 import { getWeightedFinalScore } from "../mockData";
+import { getSubjectTheme } from "../utils/subjectThemes";
 import { 
   Search, 
   ArrowLeft, 
@@ -15,7 +16,8 @@ import {
   TrendingUp,
   Award,
   Plus,
-  Trash2
+  Trash2,
+  UserPlus
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -97,12 +99,14 @@ export default function ClassOverviewView({
   const averages = useMemo(() => {
     if (studentsWithScores.length === 0) return { overall: 0, passing: 0, failing: 0 };
     
-    const overallSum = studentsWithScores.reduce((acc, s) => acc + s.finalScore, 0);
+    const gradedStudents = studentsWithScores.filter(s => s.finalScore > 0);
+    const count = gradedStudents.length > 0 ? gradedStudents.length : studentsWithScores.length;
+    const overallSum = gradedStudents.reduce((acc, s) => acc + s.finalScore, 0);
     const passingCount = studentsWithScores.filter(s => s.finalScore >= 10.0).length;
-    const failingCount = studentsWithScores.filter(s => s.finalScore < 10.0).length;
+    const failingCount = studentsWithScores.filter(s => s.finalScore < 10.0 && s.finalScore > 0).length;
 
     return {
-      overall: Number((overallSum / studentsWithScores.length).toFixed(1)),
+      overall: count > 0 ? Number((overallSum / count).toFixed(1)) : 0,
       passing: passingCount,
       failing: failingCount
     };
@@ -115,6 +119,8 @@ export default function ClassOverviewView({
     return `${f}${l}`.toUpperCase();
   };
 
+  const theme = getSubjectTheme(section.subjectName);
+
   return (
     <motion.div 
       initial={{ opacity: 0, x: 10 }}
@@ -124,58 +130,55 @@ export default function ClassOverviewView({
       className="space-y-6 pb-24"
     >
       {/* Header and Back Button */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-5">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-5 w-full min-w-0">
+        <div className="flex items-center gap-3 min-w-0">
           <button 
             onClick={onBack}
-            className="p-2.5 bg-white hover:bg-slate-100 rounded-xl border border-slate-200 transition-colors cursor-pointer group flex items-center gap-1.5 shadow-xs"
+            className="p-2.5 bg-white hover:bg-slate-100 rounded-xl border border-slate-200 transition-colors cursor-pointer group flex items-center gap-1.5 shadow-xs shrink-0"
             title="Volver a Mis Materias"
           >
             <ArrowLeft className="w-5 h-5 text-slate-600 group-hover:-translate-x-0.5 transition-transform" />
             <span className="text-xs font-bold text-slate-600 hidden sm:inline">Mis Materias</span>
           </button>
-          <div>
+          <div className="min-w-0">
             <div className="flex items-center gap-2 text-slate-400">
-              <Users className="w-4 h-4 text-blue-600" />
-              <span className="text-xs font-extrabold tracking-wider uppercase font-sans">
+              <Users className={`w-4 h-4 ${theme.primary} shrink-0`} />
+              <span className="text-xs font-extrabold tracking-wider uppercase font-sans truncate">
                 NÓMINA DE LA SECCIÓN
               </span>
               <span className="text-slate-300">•</span>
-              <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
+              <span className={`text-[10px] font-bold ${theme.pillText} ${theme.pillBg} px-2 py-0.5 rounded-full border ${theme.pillBorder} shrink-0`}>
                 {section.subjectName}
               </span>
             </div>
-            <h2 className="text-2xl font-bold text-slate-900 tracking-tight mt-1">
+            <h2 className="text-2xl font-bold text-slate-900 tracking-tight mt-1 truncate">
               {section.gradeYear} • Sección {section.sectionLetter}
             </h2>
-            <p className="text-xs text-slate-500 font-medium mt-0.5">
-              Asignatura: <span className="font-semibold text-slate-700">{section.subjectName}</span> • {section.students.length} Estudiantes Inscritos • Lapso {section.lapso}
+            <p className="text-xs text-slate-500 font-medium mt-0.5 truncate">
+              Asignatura: <span className={`font-semibold ${theme.primary}`}>{section.subjectName}</span> • {section.students.length} Estudiantes Inscritos • Lapso {section.lapso}
             </p>
           </div>
         </div>
 
         {/* Quick sibling section switcher */}
         {allSiblingSections && allSiblingSections.length > 1 && (
-          <div className="flex items-center gap-1.5 bg-slate-100/90 p-1.5 rounded-2xl border border-slate-200 overflow-x-auto self-start sm:self-center">
-            <span className="text-[10px] font-extrabold text-slate-500 uppercase px-2 whitespace-nowrap">
-              Sección:
-            </span>
+          <div className="w-full sm:w-auto max-w-full min-w-0 overflow-x-auto flex items-center gap-1.5 bg-slate-100/90 p-1.5 rounded-2xl border border-slate-200 self-stretch sm:self-center touch-pan-x">
             {allSiblingSections.map((sib) => {
               const isCurrent = sib.id === section.id;
               return (
                 <button
                   key={sib.id}
                   onClick={() => onSwitchSection && onSwitchSection(sib.id)}
-                  className={`px-3 py-1 rounded-xl text-xs font-black transition-all flex items-center gap-1 cursor-pointer whitespace-nowrap ${
+                  className={`shrink-0 px-3 py-1.5 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
                     isCurrent
-                      ? "bg-blue-600 text-white shadow-xs"
-                      : "bg-white text-slate-700 hover:bg-slate-50 border border-slate-200 hover:text-blue-600"
+                      ? `${theme.badgeBg} text-white shadow-xs`
+                      : `bg-white text-slate-700 hover:bg-slate-50 border border-slate-200 ${theme.primary.replace("text-", "hover:text-")}`
                   }`}
                   title={`Ver sección ${sib.sectionLetter}`}
                 >
-                  <span>Sec. {sib.sectionLetter}</span>
-                  <span className={`text-[10px] font-mono px-1 rounded-full ${
-                    isCurrent ? "bg-blue-700 text-white" : "bg-slate-100 text-slate-500"
+                  <span>{sib.sectionLetter}</span>
+                  <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full ${
+                    isCurrent ? "bg-black/20 text-white" : "bg-slate-100 text-slate-500"
                   }`}>
                     {sib.students?.length || 0}
                   </span>
@@ -188,23 +191,34 @@ export default function ClassOverviewView({
 
       {/* Search Bar & Filters */}
       <div className="space-y-4">
-        <div className="relative">
-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
-          <input 
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Buscar estudiante por nombre o apellido..."
-            className="w-full pl-11 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-sm placeholder-slate-400 focus:outline-hidden focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all shadow-xs"
-          />
-          {searchQuery && (
-            <button 
-              onClick={() => setSearchQuery("")}
-              className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400 hover:text-slate-600"
-            >
-              Limpiar
-            </button>
-          )}
+        <div className="flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-center">
+          <div className="relative flex-1">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
+            <input 
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Buscar estudiante por nombre, apellido o cédula..."
+              className="w-full pl-11 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-sm placeholder-slate-400 focus:outline-hidden focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all shadow-xs"
+            />
+            {searchQuery && (
+              <button 
+                onClick={() => setSearchQuery("")}
+                className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                Limpiar
+              </button>
+            )}
+          </div>
+
+          <button
+            onClick={() => onAddStudent(`${section.gradeYear} - Sección ${section.sectionLetter}`)}
+            className="px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition shadow-sm hover:shadow flex items-center justify-center gap-2 cursor-pointer shrink-0"
+            title="Buscar y agregar alumnos de cualquier sección o año"
+          >
+            <UserPlus className="w-4 h-4" />
+            <span>Agregar Alumnos</span>
+          </button>
         </div>
 
         {/* Filter Badges Carousel */}
@@ -282,6 +296,16 @@ export default function ClassOverviewView({
                             <span className={`w-1.5 h-1.5 rounded-full ${dotColorClass}`}></span>
                             <span>Prom: {score.toFixed(1)}</span>
                           </span>
+                          {student.cedula && (
+                            <span className="text-[10px] font-mono font-medium text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                              {student.cedula}
+                            </span>
+                          )}
+                          {(student.gradeYear || student.sectionLetter) && (
+                            <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                              {student.gradeYear || ""} {student.sectionLetter ? `• Sec. ${student.sectionLetter}` : ""}
+                            </span>
+                          )}
                           <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider hidden sm:inline">
                             • {statusLabel}
                           </span>

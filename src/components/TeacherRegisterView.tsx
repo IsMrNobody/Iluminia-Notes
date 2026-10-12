@@ -19,6 +19,7 @@ import {
   registerTeacherInSupabase, 
   loginTeacherWithSupabase
 } from "../lib/supabase";
+import { getCurrentSchoolYear } from "../lib/adminService";
 import { TeacherProfile, ClassSection } from "../types";
 import { motion } from "motion/react";
 
@@ -57,7 +58,7 @@ export default function TeacherRegisterView({
   const [showRegisterPassword, setShowRegisterPassword] = useState(false);
   const [department, setDepartment] = useState("Ciencias Exactas");
   const [rank, setRank] = useState("Docente Titular");
-  const [schoolYear, setSchoolYear] = useState("2025 - 2026");
+  const [schoolYear, setSchoolYear] = useState(getCurrentSchoolYear());
   const [avatarUrl, setAvatarUrl] = useState(PRESET_AVATARS[0]);
   
   // Initial subject fields - default to false so new teachers without assigned subjects start with 0
@@ -405,7 +406,7 @@ export default function TeacherRegisterView({
                   type="text"
                   value={schoolYear}
                   onChange={(e) => setSchoolYear(e.target.value)}
-                  placeholder="2025 - 2026"
+                  placeholder={getCurrentSchoolYear()}
                   className="w-full text-xs font-semibold px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-blue-600 transition"
                 />
               </div>

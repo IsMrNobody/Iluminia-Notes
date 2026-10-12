@@ -973,6 +973,8 @@ export async function loginTeacherWithSupabase(email: string, password?: string)
     }
 
     let teacherClasses: ClassSection[] = [];
+    const currentCalendarYear = new Date().getFullYear();
+    const dynamicSchoolYear = `${currentCalendarYear} - ${currentCalendarYear + 1}`;
 
     // 3. If teacher is verified from local credentials but not yet saved in profesores table, SAVE NOW!
     if (!prof) {
@@ -986,7 +988,7 @@ export async function loginTeacherWithSupabase(email: string, password?: string)
 
       const teacherDept = localCred?.department || "Ciencias Exactas";
       const teacherRank = localCred?.rank || "DOCENTE TITULAR";
-      const teacherSchoolYear = localCred?.schoolYear || "2025 - 2026";
+      const teacherSchoolYear = localCred?.schoolYear || dynamicSchoolYear;
       const teacherAvatar = encodeAvatarWithHash(
         localCred?.avatarUrl || "https://images.unsplash.com/photo-1544717305-2782549b5136?w=200&auto=format&fit=crop&q=80",
         inputHash
@@ -1044,7 +1046,7 @@ export async function loginTeacherWithSupabase(email: string, password?: string)
         name: prof.nombre,
         email: prof.email || cleanEmail,
         department: prof.departamento || "Ciencias",
-        schoolYear: prof.ano_escolar || "2025-2026",
+        schoolYear: prof.ano_escolar || dynamicSchoolYear,
         rank: prof.rango || "DOCENTE TITULAR",
         status: prof.status || (adminFromDb ? "ADMIN" : "ACTIVO"),
         avatarUrl: cleanAvatarUrl(prof.avatar_url),
@@ -1090,7 +1092,7 @@ export async function loginTeacherWithSupabase(email: string, password?: string)
         name: localCred?.name || "Docente",
         email: cleanEmail,
         department: "Ciencias",
-        schoolYear: "2025 - 2026",
+        schoolYear: localCred?.schoolYear || dynamicSchoolYear,
         rank: "DOCENTE TITULAR",
         status: "ACTIVO",
         avatarUrl: cleanAvatarUrl(localCred?.avatarUrl),
@@ -1593,6 +1595,31 @@ export async function removeStudentFromClassInSupabase(
     return { success: true };
   } catch {
     return { success: false };
+  }
+}
+
+// Delete classes/materias and their related matriculas, calificaciones and evaluaciones
+export async function deleteClassesFromSupabase(
+  classIds: string[]
+): Promise<{ success: boolean; deletedCount: number; message?: string }> {
+  if (!classIds || classIds.length === 0) return { success: true, deletedCount: 0 };
+  const client: any = getSupabaseClient();
+  try {
+    // 1. Delete associated matriculas
+    await client.from("matriculas").delete().in("materia_id", classIds);
+    // 2. Delete associated calificaciones
+    await client.from("calificaciones").delete().in("materia_id", classIds);
+    // 3. Delete associated evaluaciones
+    await client.from("evaluaciones").delete().in("materia_id", classIds);
+    // 4. Delete the materias
+    const { error } = await client.from("materias").delete().in("id", classIds);
+    if (error) {
+      console.warn("Supabase delete materias error:", error);
+    }
+    return { success: !error, deletedCount: classIds.length };
+  } catch (err: any) {
+    console.warn("Error deleting classes from Supabase:", err);
+    return { success: false, deletedCount: 0, message: err?.message };
   }
 }
 

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Student, StudentGrades } from "../types";
 import { getWeightedFinalScore, getGradingProgressPercent } from "../mockData";
+import { getSubjectTheme } from "../utils/subjectThemes";
 import { 
   ArrowLeft,
   ChevronRight,
@@ -26,6 +27,7 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 
 interface GradingViewProps {
+  key?: React.Key;
   student: Student;
   className: string;
   onBack: () => void;
@@ -369,7 +371,7 @@ export default function GradingView({
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.98 }}
       transition={{ duration: 0.25 }}
-      className="space-y-6 pb-48 relative"
+      className="space-y-6 pb-36 md:pb-28 relative"
     >
       {/* Toast alert */}
       <AnimatePresence>
@@ -466,7 +468,10 @@ export default function GradingView({
             </div>
 
             <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 font-medium font-mono mt-0.5">
-              <span>Clase: {className}</span>
+              <span>Clase:</span>
+              <span className={`font-semibold px-2 py-0.5 rounded-md border text-[11px] ${getSubjectTheme(className).pillBg} ${getSubjectTheme(className).pillText} ${getSubjectTheme(className).pillBorder}`}>
+                {className}
+              </span>
               <span>•</span>
               <span>ID: #{student.id.includes("-") ? `2024-${student.id.split("-")[1]}` : student.id}</span>
             </div>
@@ -1029,28 +1034,51 @@ export default function GradingView({
       </AnimatePresence>
 
       {/* Real-time Sticky Action Footer Bar */}
-      <div className="fixed bottom-16 left-0 w-full bg-white border-t border-slate-200 px-6 py-4 z-30 shadow-[0_-4px_12px_rgba(0,0,0,0.05)]">
-        <div className="max-w-2xl mx-auto flex items-center justify-between gap-4">
-          <div>
-            <span className="text-[9px] font-bold tracking-wider text-slate-400 uppercase font-sans">
-              CALIFICACIÓN FINAL (CALCULADA)
-            </span>
-            <div className="flex items-baseline gap-1.5 mt-0.5">
-              <span className={`text-3xl font-mono font-extrabold leading-none ${scoreClass}`}>
-                {calculatedFinalScore.toFixed(2)}
+      <div className="fixed bottom-16 md:bottom-0 left-0 md:left-64 right-0 w-full md:w-[calc(100%-16rem)] bg-white/95 backdrop-blur-xs border-t border-slate-200 px-6 py-3.5 sm:py-4 z-30 shadow-[0_-4px_16px_rgba(0,0,0,0.06)]">
+        <div className="max-w-5xl mx-auto flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4 sm:gap-6">
+            <div>
+              <span className="text-[9px] font-bold tracking-wider text-slate-400 uppercase font-sans">
+                CALIFICACIÓN FINAL (CALCULADA)
               </span>
-              <span className="text-sm font-semibold text-slate-400">/ 20.0</span>
+              <div className="flex items-baseline gap-1.5 mt-0.5">
+                <span className={`text-2xl sm:text-3xl font-mono font-extrabold leading-none ${scoreClass}`}>
+                  {calculatedFinalScore.toFixed(2)}
+                </span>
+                <span className="text-xs sm:text-sm font-semibold text-slate-400">/ 20.0</span>
+              </div>
+            </div>
+
+            {/* Desktop progress details */}
+            <div className="hidden sm:flex flex-col border-l border-slate-200 pl-4 sm:pl-6 text-xs text-slate-500">
+              <span className="font-semibold text-slate-700">
+                {student.lastName} {student.firstName}
+              </span>
+              <span className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-2">
+                <span>Avance: <strong className="text-emerald-600 font-mono">{gradingProgressPercent}%</strong></span>
+                <span>•</span>
+                <span>Ponderación: <strong className="text-slate-700 font-mono">{totalAllWeight}%</strong></span>
+              </span>
             </div>
           </div>
 
-          <button 
-            type="button"
-            onClick={handleSave}
-            className="bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-extrabold text-xs tracking-widest uppercase px-7 py-3 rounded-xl transition-all shadow-md shadow-blue-100 flex items-center gap-2 cursor-pointer"
-          >
-            <Save className="w-4 h-4" />
-            GUARDAR NOTAS
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={onBack}
+              className="hidden sm:inline-flex px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-100 text-xs font-bold uppercase tracking-wider transition cursor-pointer"
+            >
+              Volver
+            </button>
+            <button 
+              type="button" 
+              onClick={handleSave}
+              className="bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-extrabold text-xs tracking-widest uppercase px-6 sm:px-7 py-3 rounded-xl transition-all shadow-md shadow-blue-500/20 flex items-center gap-2 cursor-pointer"
+            >
+              <Save className="w-4 h-4" />
+              <span>GUARDAR NOTAS</span>
+            </button>
+          </div>
         </div>
       </div>
     </motion.div>

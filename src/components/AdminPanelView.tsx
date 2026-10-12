@@ -13,7 +13,11 @@ import {
   fetchRegisteredStudentsFromDatabase,
   saveRegisteredStudent,
   deleteRegisteredStudent,
-  syncRegisteredStudentsWithClasses
+  syncRegisteredStudentsWithClasses,
+  formatGradeYear,
+  fetchStudentCountsByYear,
+  normalizeYear,
+  getCurrentSchoolYear
 } from "../lib/adminService";
 import { 
   ShieldCheck, 
@@ -105,7 +109,7 @@ export default function AdminPanelView({
   const [newTeacherPassword, setNewTeacherPassword] = useState("");
   const [newTeacherDept, setNewTeacherDept] = useState("Ciencias Exactas");
   const [newTeacherRank, setNewTeacherRank] = useState("DOCENTE TITULAR");
-  const [newTeacherYear, setNewTeacherYear] = useState("2025 - 2026");
+  const [newTeacherYear, setNewTeacherYear] = useState(getCurrentSchoolYear());
   const [newTeacherIsAdmin, setNewTeacherIsAdmin] = useState(false);
   const [isSavingTeacher, setIsSavingTeacher] = useState(false);
 
@@ -123,6 +127,13 @@ export default function AdminPanelView({
   const [studentSearch, setStudentSearch] = useState("");
   const [studentYearFilter, setStudentYearFilter] = useState("1er Año");
   const [studentSectionFilter, setStudentSectionFilter] = useState("ALL");
+  const [studentsByYear, setStudentsByYear] = useState<Record<string, number>>({
+    "1er Año": 0,
+    "2do Año": 0,
+    "3er Año": 0,
+    "4to Año": 0,
+    "5to Año": 0,
+  });
 
   // Modals for Students
   const [isAddStudentOpen, setIsAddStudentOpen] = useState(false);
@@ -146,7 +157,7 @@ export default function AdminPanelView({
   // Load Initial Data
   useEffect(() => {
     loadTeachers();
-    loadStudents();
+    initializeStudents();
   }, []);
 
   const loadTeachers = async () => {
@@ -163,11 +174,42 @@ export default function AdminPanelView({
 
   const [loadingStudents, setLoadingStudents] = useState(false);
 
-  const loadStudents = async (targetYear?: string) => {
+  const initializeStudents = async () => {
     setLoadingStudents(true);
     try {
-      const list = await fetchRegisteredStudentsFromDatabase(targetYear);
+      const counts = await fetchStudentCountsByYear();
+      setStudentsByYear(counts);
+
+      let initialYear = "1er Año";
+      // If 1er Año has 0 students in DB, auto-select the first year that has registered students
+      if ((counts["1er Año"] || 0) === 0) {
+        const yearWithStudents = GRADE_YEAR_OPTIONS.find(y => (counts[y] || 0) > 0);
+        if (yearWithStudents) {
+          initialYear = yearWithStudents;
+          setStudentYearFilter(yearWithStudents);
+        }
+      }
+
+      const list = await fetchRegisteredStudentsFromDatabase(initialYear);
       setRegisteredStudents(list);
+    } catch (e) {
+      console.error(e);
+      setRegisteredStudents(getRegisteredStudents());
+    } finally {
+      setLoadingStudents(false);
+    }
+  };
+
+  const loadStudents = async (targetYear?: string) => {
+    const yearToFetch = (typeof targetYear === "string" && targetYear.trim()) ? targetYear.trim() : studentYearFilter;
+    setLoadingStudents(true);
+    try {
+      const [list, counts] = await Promise.all([
+        fetchRegisteredStudentsFromDatabase(yearToFetch),
+        fetchStudentCountsByYear()
+      ]);
+      setRegisteredStudents(list);
+      setStudentsByYear(counts);
     } catch (e) {
       console.error(e);
       setRegisteredStudents(getRegisteredStudents());
@@ -183,7 +225,7 @@ export default function AdminPanelView({
     setNewTeacherPassword("");
     setNewTeacherDept("Ciencias Exactas");
     setNewTeacherRank("DOCENTE TITULAR");
-    setNewTeacherYear("2025 - 2026");
+    setNewTeacherYear(getCurrentSchoolYear());
     setNewTeacherIsAdmin(false);
     setIsAddTeacherOpen(true);
   };
@@ -222,7 +264,7 @@ export default function AdminPanelView({
     setEditTeacherEmail(t.email);
     setEditTeacherDept(t.department);
     setEditTeacherRank(t.rank);
-    setEditTeacherYear(t.schoolYear);
+    setEditTeacherYear(t.schoolYear || getCurrentSchoolYear());
     setEditTeacherIsAdmin(Boolean(t.isAdmin));
     setEditTeacherNewPassword("");
   };
@@ -304,7 +346,8 @@ export default function AdminPanelView({
     });
 
     setIsAddStudentOpen(false);
-    await loadStudents();
+    setStudentYearFilter(created.gradeYear);
+    await loadStudents(created.gradeYear);
     showToast(`¡Alumno ${created.firstName} ${created.lastName} registrado en ${created.gradeYear} (${created.sectionLetter})!`);
 
     // Retroactively update matching classes loaded in app if any
@@ -341,7 +384,8 @@ export default function AdminPanelView({
     });
 
     setEditingStudent(null);
-    await loadStudents();
+    setStudentYearFilter(editStudentYear);
+    await loadStudents(editStudentYear);
     showToast("¡Datos del alumno actualizados!");
   };
 
@@ -349,7 +393,7 @@ export default function AdminPanelView({
     if (!studentToDelete) return;
     await deleteRegisteredStudent(studentToDelete.id);
     setStudentToDelete(null);
-    await loadStudents();
+    await loadStudents(studentYearFilter);
     showToast("Alumno eliminado del padrón escolar.");
   };
 
@@ -373,24 +417,18 @@ export default function AdminPanelView({
         s.lastName.toLowerCase().includes(q) ||
         s.cedula.toLowerCase().includes(q);
 
-      const matchYear = s.gradeYear === studentYearFilter;
-      const matchSec = studentSectionFilter === "ALL" || s.sectionLetter === studentSectionFilter;
+      const matchYear = formatGradeYear(s.gradeYear) === formatGradeYear(studentYearFilter);
+      const matchSec = studentSectionFilter === "ALL" || 
+        s.sectionLetter.trim().toUpperCase() === studentSectionFilter.trim().toUpperCase();
 
       return matchSearch && matchYear && matchSec;
     });
   }, [registeredStudents, studentSearch, studentYearFilter, studentSectionFilter]);
 
-  // Aggregate stats
-  const studentsByYear = useMemo(() => {
-    const counts: Record<string, number> = {};
-    GRADE_YEAR_OPTIONS.forEach(y => counts[y] = 0);
-    registeredStudents.forEach(s => {
-      if (counts[s.gradeYear] !== undefined) {
-        counts[s.gradeYear] += 1;
-      }
-    });
-    return counts;
-  }, [registeredStudents]);
+  // Aggregate stats: total student count across all years
+  const totalStudentsCount = useMemo(() => {
+    return (Object.values(studentsByYear) as number[]).reduce((acc: number, count: number) => acc + (count || 0), 0);
+  }, [studentsByYear]);
 
   return (
     <div className="space-y-6 pb-28 text-slate-900 animate-fade-in">
@@ -463,7 +501,7 @@ export default function AdminPanelView({
             }`}
           >
             <GraduationCap className="w-4 h-4 text-emerald-600" />
-            Alumnos ({registeredStudents.length})
+            Alumnos ({totalStudentsCount})
           </button>
         </div>
       </div>
@@ -500,9 +538,11 @@ export default function AdminPanelView({
                 Año Escolar
               </span>
               <p className="text-2xl font-black font-mono text-blue-600 mt-1">
-                2025 - 2026
+                {getCurrentSchoolYear()}
               </p>
-              <p className="text-xs text-slate-400 mt-0.5">Periodo académico activo</p>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Periodo académico activo ({getCurrentSchoolYear("/")})
+              </p>
             </div>
           </div>
 
@@ -734,7 +774,7 @@ export default function AdminPanelView({
 
             <div className="flex items-center gap-2">
               <button
-                onClick={loadStudents}
+                onClick={() => loadStudents(studentYearFilter)}
                 title="Refrescar lista desde la base de datos"
                 className="p-2.5 rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-800 transition cursor-pointer"
               >
@@ -753,7 +793,10 @@ export default function AdminPanelView({
               )}
 
               <button
-                onClick={handleOpenAddStudent}
+                onClick={() => {
+                  setNewStudentYear(studentYearFilter);
+                  handleOpenAddStudent();
+                }}
                 className="bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white font-extrabold text-xs tracking-wider uppercase px-4 py-2.5 rounded-xl transition shadow-md shadow-emerald-600/20 flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
@@ -779,7 +822,7 @@ export default function AdminPanelView({
             {filteredStudents.length === 0 ? (
               <div className="p-12 text-center text-slate-400">
                 <GraduationCap className="w-10 h-10 mx-auto mb-2 text-slate-300" />
-                {registeredStudents.length === 0 ? (
+                {totalStudentsCount === 0 ? (
                   <div className="max-w-md mx-auto space-y-2">
                     <p className="text-sm font-bold text-slate-700">Sin alumnos en la base de datos</p>
                     <p className="text-xs text-slate-400 leading-relaxed">
@@ -787,7 +830,10 @@ export default function AdminPanelView({
                     </p>
                     <div className="pt-2">
                       <button
-                        onClick={handleOpenAddStudent}
+                        onClick={() => {
+                          setNewStudentYear(studentYearFilter);
+                          handleOpenAddStudent();
+                        }}
                         className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs tracking-wider uppercase px-4 py-2.5 rounded-xl transition shadow-md shadow-emerald-600/20 inline-flex items-center gap-2 cursor-pointer"
                       >
                         <Plus className="w-4 h-4" />
@@ -795,10 +841,29 @@ export default function AdminPanelView({
                       </button>
                     </div>
                   </div>
+                ) : registeredStudents.length === 0 ? (
+                  <div className="max-w-md mx-auto space-y-2">
+                    <p className="text-sm font-bold text-slate-700">No hay alumnos registrados en {studentYearFilter}</p>
+                    <p className="text-xs text-slate-400 leading-relaxed">
+                      Actualmente no hay estudiantes registrados en la base de datos para {studentYearFilter}.
+                    </p>
+                    <div className="pt-2 flex justify-center gap-2">
+                      <button
+                        onClick={() => {
+                          setNewStudentYear(studentYearFilter);
+                          handleOpenAddStudent();
+                        }}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs tracking-wider uppercase px-4 py-2 rounded-xl transition shadow-md shadow-emerald-600/20 inline-flex items-center gap-2 cursor-pointer"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>Inscribir en {studentYearFilter}</span>
+                      </button>
+                    </div>
+                  </div>
                 ) : (
                   <div>
-                    <p className="text-sm font-bold text-slate-700">No se encontraron alumnos</p>
-                    <p className="text-xs text-slate-400 mt-1">Prueba cambiando los filtros de búsqueda, año o sección.</p>
+                    <p className="text-sm font-bold text-slate-700">No se encontraron alumnos coincidentes</p>
+                    <p className="text-xs text-slate-400 mt-1">Prueba cambiando el término de búsqueda o el filtro de sección.</p>
                   </div>
                 )}
               </div>
